@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-from models.unet import UNet
+from models.unet import UNet, UNetWithBackbone
 
 
 def load_image(image_path, size=256):
@@ -93,7 +93,8 @@ def create_overlay(original_image, prediction):
     return result
 
 
-def main(image_path, model_path, output_dir=None, device_name='cuda', visualize=True):
+def main(image_path, model_path, output_dir=None, device_name='cuda', visualize=True, 
+          model_name='UNetWithBackbone', backbone='resnet34'):
     """Main inference function"""
     
     # Device
@@ -102,7 +103,11 @@ def main(image_path, model_path, output_dir=None, device_name='cuda', visualize=
     
     # Load model
     print(f"Loading model from: {model_path}")
-    model = UNet(in_channels=3, out_channels=1, init_features=64)
+    
+    if model_name == 'UNetWithBackbone':
+        model = UNetWithBackbone(backbone_name=backbone, num_classes=1, pretrained=False)
+    else:
+        model = UNet(in_channels=3, out_channels=1, init_features=64)
     
     if not Path(model_path).exists():
         print(f"Error: Model file not found: {model_path}")
@@ -164,7 +169,15 @@ if __name__ == "__main__":
                        choices=['cuda', 'cpu'], help='Device to use')
     parser.add_argument('--visualize', action='store_true',
                        help='Visualize results')
+    parser.add_argument('--model_name', type=str, default='UNetWithBackbone',
+                       choices=['UNetWithBackbone', 'UNet'],
+                       help='Model architecture')
+    parser.add_argument('--backbone', type=str, default='resnet34',
+                       choices=['resnet18', 'resnet34', 'resnet50', 'resnet101', 
+                               'efficientnet_b4', 'mobilenet_v2'],
+                       help='Backbone architecture (for UNetWithBackbone)')
     
     args = parser.parse_args()
     
-    main(args.image_path, args.model_path, args.output_dir, args.device, args.visualize)
+    main(args.image_path, args.model_path, args.output_dir, args.device, 
+         args.visualize, args.model_name, args.backbone)

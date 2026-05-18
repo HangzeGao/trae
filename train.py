@@ -10,7 +10,7 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 
-from models.unet import UNet
+from models.unet import UNet, UNetWithBackbone
 from models.losses import get_loss_function
 from models.metrics import SegmentationMetrics
 
@@ -23,11 +23,21 @@ class Trainer:
         self.device = device
         
         # Model
-        self.model = UNet(
-            in_channels=config['model']['in_channels'],
-            out_channels=config['model']['out_channels'],
-            init_features=config['model']['init_features']
-        ).to(device)
+        model_name = config['model']['name']
+        if model_name == 'UNetWithBackbone':
+            backbone = config['model'].get('backbone', 'resnet34')
+            pretrained = config['model'].get('pretrained', True)
+            self.model = UNetWithBackbone(
+                backbone_name=backbone,
+                num_classes=config['model']['out_channels'],
+                pretrained=pretrained
+            ).to(device)
+        else:
+            self.model = UNet(
+                in_channels=config['model']['in_channels'],
+                out_channels=config['model']['out_channels'],
+                init_features=config['model'].get('init_features', 64)
+            ).to(device)
         
         # Loss
         self.loss_fn = get_loss_function(config['training']['loss'])
