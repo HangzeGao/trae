@@ -1,0 +1,40 @@
+# Project Configuration for Cloud Segmentation
+
+# Data Configuration
+data:
+  train_images: "./data/processed/train/images"
+  train_masks: "./data/processed/train/masks"
+  val_images: "./data/processed/val/images"
+  val_masks: "./data/processed/val/masks"
+  test_images: "./data/processed/test/images"
+  test_masks: "./data/processed/test/masks"
+  image_size: 256
+
+# Model Configuration
+model:
+  name: "UNet"
+  in_channels: 3          # RGB images
+  out_channels: 1         # Binary segmentation
+  init_features: 64       # Initial number of features
+  bilinear: true          # Use bilinear upsampling
+
+# Training Configuration
+training:
+  epochs: 100
+  batch_size: 16
+  learning_rate: 0.001
+  weight_decay: 1e-5
+  optimizer: "adam"       # Options: adam, sgd
+  loss: "dice_bce"        # Options: bce, dice, dice_bce, focal, iou
+  num_workers: 4
+  patience: 15            # Early stopping patience
+  checkpoint_dir: "./checkpoints"
+
+# Augmentation Configuration (optional)
+augmentation:
+  enabled: true
+  horizontal_flip: 0.5
+  vertical_flip: 0.5
+  rotation: 15
+  brightness: 0.2
+  contrast: 0.2
