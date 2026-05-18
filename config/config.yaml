@@ -10,13 +10,21 @@ data:
   test_masks: "./data/processed/test/masks"
   image_size: 256
 
-# Model Configuration
+# Model Configuration using segmentation_models_pytorch
 model:
-  name: "UNetWithBackbone"
-  backbone: "resnet34"
-  pretrained: true
+  # Architecture options: Unet, UnetPlusPlus, DeepLabV3, DeepLabV3Plus, FPN, PSPNet, Linknet, MAnet, PAN
+  architecture: "Unet"
+  # Encoder options: resnet18, resnet34, resnet50, efficientnet-b0 to efficientnet-b7, etc.
+  encoder_name: "resnet34"
+  # Pretrained weights: "imagenet" or null
+  encoder_weights: "imagenet"
   in_channels: 3
   out_channels: 1
+  activation: "sigmoid"  # "sigmoid" for binary, "softmax" for multi-class
+  # Additional model-specific kwargs (optional)
+  model_kwargs:
+    encoder_depth: 5
+    decoder_channels: [256, 128, 64, 32, 16]
 
 # Training Configuration
 training:

@@ -10,7 +10,7 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 
-from models.unet import UNet, UNetWithBackbone
+from models.unet import create_model
 from models.losses import get_loss_function
 from models.metrics import SegmentationMetrics
 
@@ -22,22 +22,17 @@ class Trainer:
         self.config = config
         self.device = device
         
-        # Model
-        model_name = config['model']['name']
-        if model_name == 'UNetWithBackbone':
-            backbone = config['model'].get('backbone', 'resnet34')
-            pretrained = config['model'].get('pretrained', True)
-            self.model = UNetWithBackbone(
-                backbone_name=backbone,
-                num_classes=config['model']['out_channels'],
-                pretrained=pretrained
-            ).to(device)
-        else:
-            self.model = UNet(
-                in_channels=config['model']['in_channels'],
-                out_channels=config['model']['out_channels'],
-                init_features=config['model'].get('init_features', 64)
-            ).to(device)
+        # Model using segmentation_models_pytorch
+        model_config = config['model']
+        self.model = create_model(
+            architecture=model_config.get('architecture', 'Unet'),
+            encoder_name=model_config.get('encoder_name', 'resnet34'),
+            encoder_weights=model_config.get('encoder_weights', 'imagenet'),
+            in_channels=model_config.get('in_channels', 3),
+            classes=model_config.get('out_channels', 1),
+            activation=model_config.get('activation', 'sigmoid'),
+            **model_config.get('model_kwargs', {})
+        ).to(device)
         
         # Loss
         self.loss_fn = get_loss_function(config['training']['loss'])

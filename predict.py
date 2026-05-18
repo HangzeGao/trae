@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-from models.unet import UNet, UNetWithBackbone
+from models.unet import create_model
 
 
 def load_image(image_path, size=256):
@@ -94,20 +94,24 @@ def create_overlay(original_image, prediction):
 
 
 def main(image_path, model_path, output_dir=None, device_name='cuda', visualize=True, 
-          model_name='UNetWithBackbone', backbone='resnet34'):
+          architecture='Unet', encoder_name='resnet34'):
     """Main inference function"""
     
     # Device
     device = torch.device(device_name if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}\n")
     
-    # Load model
+    # Load model using segmentation_models_pytorch
     print(f"Loading model from: {model_path}")
     
-    if model_name == 'UNetWithBackbone':
-        model = UNetWithBackbone(backbone_name=backbone, num_classes=1, pretrained=False)
-    else:
-        model = UNet(in_channels=3, out_channels=1, init_features=64)
+    model = create_model(
+        architecture=architecture,
+        encoder_name=encoder_name,
+        encoder_weights=None,
+        in_channels=3,
+        classes=1,
+        activation='sigmoid'
+    )
     
     if not Path(model_path).exists():
         print(f"Error: Model file not found: {model_path}")
@@ -169,15 +173,14 @@ if __name__ == "__main__":
                        choices=['cuda', 'cpu'], help='Device to use')
     parser.add_argument('--visualize', action='store_true',
                        help='Visualize results')
-    parser.add_argument('--model_name', type=str, default='UNetWithBackbone',
-                       choices=['UNetWithBackbone', 'UNet'],
+    parser.add_argument('--architecture', type=str, default='Unet',
+                       choices=['Unet', 'UnetPlusPlus', 'DeepLabV3', 'DeepLabV3Plus', 
+                                'FPN', 'PSPNet', 'Linknet', 'MAnet', 'PAN'],
                        help='Model architecture')
-    parser.add_argument('--backbone', type=str, default='resnet34',
-                       choices=['resnet18', 'resnet34', 'resnet50', 'resnet101', 
-                               'efficientnet_b4', 'mobilenet_v2'],
-                       help='Backbone architecture (for UNetWithBackbone)')
+    parser.add_argument('--encoder_name', type=str, default='resnet34',
+                       help='Encoder backbone name (e.g., resnet18, resnet34, resnet50, efficientnet-b0, etc.)')
     
     args = parser.parse_args()
     
     main(args.image_path, args.model_path, args.output_dir, args.device, 
-         args.visualize, args.model_name, args.backbone)
+         args.visualize, args.architecture, args.encoder_name)
