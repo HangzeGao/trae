@@ -24,8 +24,14 @@ def create_model_from_config(config: Config, **kwargs) -> torch.nn.Module:
         PyTorch model
     """
     model_cfg = config.model
+    architecture = model_cfg.get('architecture', 'Unet')
+    
+    if architecture == 'SkySensePP':
+        from .skysense_pp import create_skysense_pp_model_from_config as create_skysense_pp
+        return create_skysense_pp(config, **kwargs)
+    
     return create_model(
-        architecture=model_cfg.get('architecture', 'Unet'),
+        architecture=architecture,
         encoder_name=model_cfg.get('encoder_name', 'resnet34'),
         encoder_weights=model_cfg.get('encoder_weights', 'imagenet'),
         in_channels=model_cfg.get('in_channels', 4),
