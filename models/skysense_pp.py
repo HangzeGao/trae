@@ -203,6 +203,8 @@ class SemanticEnhancedDecoder(nn.Module):
         self.use_skip_connections = use_skip_connections
         
         self.decoder_blocks = nn.ModuleList()
+        self.skip_projections = nn.ModuleDict()
+        
         for i in range(len(decoder_channels)):
             in_ch = encoder_channels[-1] if i == 0 else decoder_channels[i - 1]
             out_ch = decoder_channels[i]
@@ -213,6 +215,19 @@ class SemanticEnhancedDecoder(nn.Module):
                     ConvModule(out_ch, out_ch)
                 )
             )
+            
+            if i < len(encoder_channels) - 1:
+                skip_ch = encoder_channels[-(i+2)]
+                if skip_ch != out_ch:
+                    self.skip_projections[str(i)] = nn.Sequential(
+                        nn.Conv2d(skip_ch, out_ch, 1),
+                        nn.BatchNorm2d(out_ch),
+                        nn.ReLU(inplace=True)
+                    )
+                else:
+                    self.skip_projections[str(i)] = nn.Identity()
+            else:
+                self.skip_projections[str(i)] = nn.Identity()
         
         self.upsample_blocks = nn.ModuleList([
             nn.ConvTranspose2d(
@@ -258,6 +273,9 @@ class SemanticEnhancedDecoder(nn.Module):
                             mode='bilinear',
                             align_corners=True
                         )
+                    
+                    # 应用跳跃连接投影
+                    skip = self.skip_projections[str(i)](skip)
                     
                     x = x + skip
         
@@ -329,8 +347,14 @@ class SkySensePPModel(nn.Module):
             self.encoder = baseModelWrapper(base_model.encoder)
             self.use_smp_encoder = False
         
+        # 动态获取编码器输出通道
+        dummy_input = torch.zeros(1, self.in_channels, 224, 224)
+        with torch.no_grad():
+            dummy_features = self.encoder(dummy_input)
+        encoder_out_channels = dummy_features[-1].shape[1]
+        
         self.fusion = MultiModalFusion(
-            in_channels_list=[self.encoder_channels[-1]],
+            in_channels_list=[encoder_out_channels],
             out_channels=self.decoder_channels[0],
             fusion_type=fusion_type,
             use_modality_vae=False
@@ -343,9 +367,16 @@ class SkySensePPModel(nn.Module):
         else:
             self.semantic_enhancer = None
         
+        # 动态获取编码器输出通道
+        dummy_input = torch.zeros(1, self.in_channels, 224, 224)
+        with torch.no_grad():
+            dummy_features = self.encoder(dummy_input)
+        encoder_out_channels = dummy_features[-1].shape[1]
+        feature_channels = [f.shape[1] for f in dummy_features]
+        
         self.decoder = SemanticEnhancedDecoder(
-            encoder_channels=self.encoder_channels,
-            decoder_channels=self.decoder_channels,
+            encoder_channels=feature_channels,
+            decoder_channels=[encoder_out_channels] + self.decoder_channels,
             num_classes=num_classes,
             dropout=dropout
         )
