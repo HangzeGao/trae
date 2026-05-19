@@ -1,48 +1,33 @@
-# Project Configuration for Cloud Segmentation
+# Cloud Segmentation Project Configuration (Kaggle 38cloud/95cloud)
+# Optimized configuration for production
 
-# Data Configuration
-data:
-  train_images: "./data/processed/train/images"
-  train_masks: "./data/processed/train/masks"
-  val_images: "./data/processed/val/images"
-  val_masks: "./data/processed/val/masks"
-  test_images: "./data/processed/test/images"
-  test_masks: "./data/processed/test/masks"
-  image_size: 256
-
-# Model Configuration using segmentation_models_pytorch
+# Model Configuration
 model:
-  # Architecture options: Unet, UnetPlusPlus, DeepLabV3, DeepLabV3Plus, FPN, PSPNet, Linknet, MAnet, PAN
   architecture: "Unet"
-  # Encoder options: resnet18, resnet34, resnet50, efficientnet-b0 to efficientnet-b7, etc.
   encoder_name: "resnet34"
-  # Pretrained weights: "imagenet" or null
   encoder_weights: "imagenet"
   in_channels: 4
   out_channels: 1
-  activation: "sigmoid"  # "sigmoid" for binary, "softmax" for multi-class
-  # Additional model-specific kwargs (optional)
+  activation: "sigmoid"
   model_kwargs:
     encoder_depth: 5
     decoder_channels: [256, 128, 64, 32, 16]
 
 # Training Configuration
 training:
-  epochs: 5
-  batch_size: 4
+  epochs: 20
+  batch_size: 8
   learning_rate: 0.001
   weight_decay: 0.00001
-  optimizer: "adam"       # Options: adam, sgd
-  loss: "dice_bce"        # Options: bce, dice, dice_bce, focal, iou
+  optimizer: "adam"
+  loss: "dice_bce"
   num_workers: 0
-  patience: 15            # Early stopping patience
+  patience: 8
   checkpoint_dir: "./checkpoints"
 
-# Augmentation Configuration (optional)
-augmentation:
-  enabled: true
-  horizontal_flip: 0.5
-  vertical_flip: 0.5
-  rotation: 15
-  brightness: 0.2
-  contrast: 0.2
+# Data Configuration
+data:
+  base_path: "/root/.cache/kagglehub/datasets/sorour/38cloud-cloud-segmentation-in-satellite-images/versions/4"
+  min_cloud_ratio: 0.1
+  max_cloud_ratio: 0.9
+  train_val_split: 0.8
