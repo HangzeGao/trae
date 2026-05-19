@@ -56,6 +56,18 @@ datasets:
     file_extension: ".TIF"
     weight: 2.0
     train_dir: "95-cloud_training_only_additional_to38-cloud"
+  "cloud_cover":
+    name: "Cloud Cover Detection"
+    base_path: "./data/cloud_cover_detection"
+    schedule_file: "./data/cloud_cover_detection/train_patches.csv"
+    bands: ["blue", "green", "red", "nir"]
+    band_files: ["B02.tif", "B03.tif", "B04.tif", "B08.tif"]
+    mask_suffix: ""
+    mask_file: "{name}.tif"
+    mask_threshold: 0
+    file_extension: ".tif"
+    weight: 1.0
+    train_dir: "data"
 
 # Sampling Strategies
 sampling:

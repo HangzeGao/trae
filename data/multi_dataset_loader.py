@@ -171,6 +171,17 @@ class CloudSegmentationDataset(Dataset):
         else:
             train_path = base_path
         
+        # 检查是否有 band_files 配置（用于新格式）
+        if hasattr(self.config, 'band_files'):
+            band_idx = self.config.bands.index(band) if band in self.config.bands else None
+            if band_idx is not None and band_idx < len(self.config.band_files):
+                band_file = self.config.band_files[band_idx]
+                possible_paths = [
+                    train_path / "train_features" / name / band_file,
+                ]
+                return any(path.exists() for path in possible_paths)
+        
+        # 原有格式的备用
         possible_paths = [
             train_path / f"train_{band}" / f"{band}_{name}{self.config.file_extension}",
             train_path / f"train_{band}_additional_to38cloud" / f"{band}_{name}{self.config.file_extension}",
@@ -187,6 +198,16 @@ class CloudSegmentationDataset(Dataset):
         else:
             train_path = base_path
         
+        # 检查是否有 mask_file 配置（用于新格式）
+        if hasattr(self.config, 'mask_file'):
+            mask_file = self.config.mask_file.format(name=name)
+            possible_paths = [
+                train_path / "train_labels" / mask_file,
+            ]
+            if any(path.exists() for path in possible_paths):
+                return True
+        
+        # 原有格式的备用
         possible_paths = [
             train_path / f"train_{self.config.mask_suffix}" / f"{self.config.mask_suffix}_{name}{self.config.file_extension}",
             train_path / f"train_{self.config.mask_suffix}_additional_to38cloud" / f"{self.config.mask_suffix}_{name}{self.config.file_extension}",
@@ -319,6 +340,16 @@ class CloudSegmentationDataset(Dataset):
         else:
             train_path = base_path
         
+        # 检查是否有 band_files 配置（用于新格式）
+        if hasattr(self.config, 'band_files'):
+            band_idx = self.config.bands.index(band) if band in self.config.bands else None
+            if band_idx is not None and band_idx < len(self.config.band_files):
+                band_file = self.config.band_files[band_idx]
+                possible_path = train_path / "train_features" / name / band_file
+                if possible_path.exists():
+                    return possible_path
+        
+        # 原有格式的备用
         possible_paths = [
             train_path / f"train_{band}" / f"{band}_{name}{self.config.file_extension}",
             train_path / f"train_{band}_additional_to38cloud" / f"{band}_{name}{self.config.file_extension}",
@@ -344,6 +375,14 @@ class CloudSegmentationDataset(Dataset):
         else:
             train_path = base_path
         
+        # 检查是否有 mask_file 配置（用于新格式）
+        if hasattr(self.config, 'mask_file'):
+            mask_file = self.config.mask_file.format(name=name)
+            possible_path = train_path / "train_labels" / mask_file
+            if possible_path.exists():
+                return possible_path
+        
+        # 原有格式的备用
         possible_paths = [
             train_path / f"train_{self.config.mask_suffix}" / f"{self.config.mask_suffix}_{name}{self.config.file_extension}",
             train_path / f"train_{self.config.mask_suffix}_additional_to38cloud" / f"{self.config.mask_suffix}_{name}{self.config.file_extension}",

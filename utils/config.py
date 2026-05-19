@@ -29,6 +29,8 @@ class DatasetConfig:
     file_extension: str = ".TIF"
     weight: float = 1.0
     train_dir: Optional[str] = None
+    band_files: Optional[list] = None
+    mask_file: Optional[str] = None
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'DatasetConfig':
