@@ -295,7 +295,6 @@ class SkySensePPModel(nn.Module):
         if encoder_channels is None:
             encoder_channels = [64, 128, 256, 512, 1024]
         
-        self.encoder_channels = encoder_channels[:encoder_depth]
         self.decoder_channels = decoder_channels[:encoder_depth]
         self.num_classes = num_classes
         self.activation = activation
@@ -329,8 +328,14 @@ class SkySensePPModel(nn.Module):
             self.encoder = baseModelWrapper(base_model.encoder)
             self.use_smp_encoder = False
         
+        # Store config for later initialization
+        self._fusion_type = fusion_type
+        self._use_semantic_enhancement = use_semantic_enhancement
+        
+        # Use default encoder channels for initial setup
+        default_channels = [64, 128, 256, 512, 512]  # ResNet34 defaults
         self.fusion = MultiModalFusion(
-            in_channels_list=[self.encoder_channels[-1]],
+            in_channels_list=[default_channels[-1]],
             out_channels=self.decoder_channels[0],
             fusion_type=fusion_type,
             use_modality_vae=False
@@ -344,11 +349,14 @@ class SkySensePPModel(nn.Module):
             self.semantic_enhancer = None
         
         self.decoder = SemanticEnhancedDecoder(
-            encoder_channels=self.encoder_channels,
+            encoder_channels=default_channels,
             decoder_channels=self.decoder_channels,
             num_classes=num_classes,
             dropout=dropout
         )
+        
+        # Will be updated on first forward pass
+        self.encoder_channels = None
         
         self._init_weights()
     
@@ -371,6 +379,12 @@ class SkySensePPModel(nn.Module):
         else:
             features = self.encoder(x)
         
+        # Detect and set encoder channels dynamically
+        if self.encoder_channels is None:
+            self.encoder_channels = [f.shape[1] for f in features]
+            # Rebuild fusion and decoder with correct channels
+            self._rebuild_components()
+        
         fused = self.fusion([features[-1]])
         
         if self.semantic_enhancer is not None:
@@ -384,6 +398,27 @@ class SkySensePPModel(nn.Module):
             logits = F.softmax(logits, dim=1)
         
         return logits
+    
+    def _rebuild_components(self):
+        """Rebuild components after detecting encoder channels."""
+        self.fusion = MultiModalFusion(
+            in_channels_list=[self.encoder_channels[-1]],
+            out_channels=self.decoder_channels[0],
+            fusion_type='adaptive',
+            use_modality_vae=False
+        ).to(next(self.parameters()).device)
+        
+        if self.semantic_enhancer is not None:
+            self.semantic_enhancer = SemanticEnhancementModule(
+                channels=self.decoder_channels[0]
+            ).to(next(self.parameters()).device)
+        
+        self.decoder = SemanticEnhancedDecoder(
+            encoder_channels=self.encoder_channels,
+            decoder_channels=self.decoder_channels,
+            num_classes=self.num_classes,
+            dropout=0.1
+        ).to(next(self.parameters()).device)
 
 
 class SemanticEnhancementModule(nn.Module):
