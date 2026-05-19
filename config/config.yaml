@@ -18,7 +18,7 @@ model:
   encoder_name: "resnet34"
   # Pretrained weights: "imagenet" or null
   encoder_weights: "imagenet"
-  in_channels: 3
+  in_channels: 4
   out_channels: 1
   activation: "sigmoid"  # "sigmoid" for binary, "softmax" for multi-class
   # Additional model-specific kwargs (optional)
@@ -28,13 +28,13 @@ model:
 
 # Training Configuration
 training:
-  epochs: 100
-  batch_size: 16
+  epochs: 5
+  batch_size: 4
   learning_rate: 0.001
-  weight_decay: 1e-5
+  weight_decay: 0.00001
   optimizer: "adam"       # Options: adam, sgd
   loss: "dice_bce"        # Options: bce, dice, dice_bce, focal, iou
-  num_workers: 4
+  num_workers: 0
   patience: 15            # Early stopping patience
   checkpoint_dir: "./checkpoints"
 
