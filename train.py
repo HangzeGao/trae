@@ -1,182 +1,209 @@
+#!/usr/bin/env python3
 """
-Training script for UNet cloud segmentation
+Cloud Segmentation Training Script
+
+Supports multiple datasets and sampling strategies.
+All configuration is loaded from config/config.yaml.
 """
 
 import argparse
-import yaml
-import torch
-import torch.optim as optim
+import sys
 from pathlib import Path
 from tqdm import tqdm
-import numpy as np
 
-from models.unet import UNet
-from models.losses import get_loss_function
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+# Add project root to path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+from utils import load_config, set_seed, get_device, save_checkpoint, count_parameters
+from models.unet import create_model_from_config
+from models.losses import get_loss_function_from_config
 from models.metrics import SegmentationMetrics
+from data.multi_dataset_loader import get_combined_dataloader, print_dataset_summary
 
 
-class Trainer:
-    """Trainer class for cloud segmentation"""
+def train(config, strategy="weighted", dataset_names=None, sample_size=None, quick=False):
+    """
+    Main training function.
     
-    def __init__(self, config, device):
-        self.config = config
-        self.device = device
-        
-        # Model
-        self.model = UNet(
-            in_channels=config['model']['in_channels'],
-            out_channels=config['model']['out_channels'],
-            init_features=config['model']['init_features']
-        ).to(device)
-        
-        # Loss
-        self.loss_fn = get_loss_function(config['training']['loss'])
-        
-        # Optimizer
-        lr = config['training']['learning_rate']
-        weight_decay = config['training']['weight_decay']
-        
-        if config['training']['optimizer'].lower() == 'adam':
-            self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
-        else:
-            self.optimizer = optim.SGD(self.model.parameters(), lr=lr, weight_decay=weight_decay, momentum=0.9)
-        
-        # Scheduler
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=config['training']['epochs']
-        )
-        
-        # Checkpoint directory
-        self.checkpoint_dir = Path(config['training']['checkpoint_dir'])
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Metrics
-        self.best_val_dice = 0
-        self.patience = config['training']['patience']
-        self.patience_counter = 0
+    Args:
+        config: Config object
+        strategy: Sampling strategy (concat, weighted, round_robin, balanced, sample)
+        dataset_names: List of dataset names to use (default: all available)
+        sample_size: Number of samples per dataset for quick validation
+        quick: Quick training mode (fewer epochs)
+    """
+    set_seed(42)
+    device = get_device()
+    print(f"Using device: {device}")
     
-    def train_epoch(self, train_loader):
-        """Train one epoch"""
-        self.model.train()
-        total_loss = 0
-        
-        with tqdm(train_loader, desc="Training") as pbar:
-            for images, masks in pbar:
-                images = images.to(self.device)
-                masks = masks.to(self.device)
-                
-                # Forward pass
-                outputs = self.model(images)
-                loss = self.loss_fn(outputs, masks)
-                
-                # Backward pass
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                
-                total_loss += loss.item()
-                pbar.set_postfix({'loss': loss.item()})
-        
-        return total_loss / len(train_loader)
+    # Load dataset registry from config
+    if dataset_names is None:
+        dataset_names = list(config.datasets.keys())
     
-    def validate(self, val_loader):
-        """Validate"""
-        self.model.eval()
-        total_dice = 0
-        total_iou = 0
-        
-        with torch.no_grad():
-            with tqdm(val_loader, desc="Validation") as pbar:
-                for images, masks in pbar:
-                    images = images.to(self.device)
-                    masks = masks.to(self.device)
-                    
-                    # Forward pass
-                    outputs = self.model(images)
-                    
-                    # Calculate metrics
-                    dice = SegmentationMetrics.dice_score(outputs, masks)
-                    iou = SegmentationMetrics.iou_score(outputs, masks)
-                    
-                    total_dice += dice
-                    total_iou += iou
-                    
-                    pbar.set_postfix({'dice': dice, 'iou': iou})
-        
-        avg_dice = total_dice / len(val_loader)
-        avg_iou = total_iou / len(val_loader)
-        
-        return avg_dice, avg_iou
+    print("\n" + "=" * 80)
+    print("CONFIGURATION SUMMARY")
+    print("=" * 80)
+    print(f"Model: {config.model.get('architecture')} with {config.model.get('encoder_name')}")
+    print(f"Dataset strategy: {strategy}")
+    print(f"Datasets: {dataset_names}")
+    print(f"Batch size: {config.training.get('batch_size')}")
+    print(f"Epochs: {config.training.get('epochs') if not quick else 5}")
+    print("=" * 80 + "\n")
     
-    def train(self, train_loader, val_loader):
-        """Full training loop"""
+    print_dataset_summary(config)
+    
+    # Create data loader
+    print(f"\nCreating DataLoader with {strategy} strategy...")
+    train_loader = get_combined_dataloader(
+        dataset_names=dataset_names,
+        strategy=strategy,
+        batch_size=config.training.get('batch_size', 8),
+        shuffle=strategy not in ["weighted", "round_robin"],
+        num_workers=config.training.get('num_workers', 0),
+        sample_size=sample_size if sample_size else config.sampling.get('sample_size', 100),
+        config=config,
+        augment=True,
+        target_channels=config.data.get('target_channels', 4)
+    )
+    print(f"Training data loaded: {len(train_loader.dataset)} samples, {len(train_loader)} batches")
+    
+    # Create model
+    print(f"\nCreating model...")
+    model = create_model_from_config(config).to(device)
+    print(f"Model created: {count_parameters(model):,} trainable parameters")
+    
+    # Loss function and optimizer
+    criterion = get_loss_function_from_config(config)
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=config.training.get('learning_rate', 0.001),
+        weight_decay=config.training.get('weight_decay', 1e-5)
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        patience=config.training.get('scheduler_patience', 3),
+        factor=config.training.get('scheduler_factor', 0.5)
+    )
+    
+    # Training setup
+    num_epochs = config.training.get('epochs', 20) if not quick else 5
+    best_loss = float('inf')
+    checkpoint_dir = Path(config.training.get('checkpoint_dir', './checkpoints'))
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_name = f'best_model_{strategy}.pth'
+    
+    # Metrics
+    metrics = SegmentationMetrics()
+    
+    # Training loop
+    print(f"\nStarting training for {num_epochs} epochs...")
+    print("=" * 80)
+    
+    for epoch in range(num_epochs):
+        model.train()
+        epoch_loss = 0.0
+        epoch_metrics = {'dice': 0.0, 'iou': 0.0}
         
-        print(f"\nStarting training on {self.device}")
-        print(f"Total parameters: {sum(p.numel() for p in self.model.parameters()):,}\n")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
         
-        for epoch in range(self.config['training']['epochs']):
-            # Train
-            train_loss = self.train_epoch(train_loader)
+        for batch_idx, (images, masks) in enumerate(pbar):
+            images = images.to(device)
+            masks = masks.to(device)
             
-            # Validate
-            val_dice, val_iou = self.validate(val_loader)
+            # Forward pass
+            outputs = model(images)
+            loss = criterion(outputs, masks)
             
-            # Update scheduler
-            self.scheduler.step()
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
             
-            print(f"\nEpoch {epoch+1}/{self.config['training']['epochs']}")
-            print(f"  Train Loss: {train_loss:.4f}")
-            print(f"  Val Dice:   {val_dice:.4f}")
-            print(f"  Val IoU:    {val_iou:.4f}")
+            epoch_loss += loss.item()
             
-            # Save best model
-            if val_dice > self.best_val_dice:
-                self.best_val_dice = val_dice
-                self.patience_counter = 0
-                
-                model_path = self.checkpoint_dir / f"best_model_{epoch+1:03d}.pth"
-                torch.save(self.model.state_dict(), model_path)
-                print(f"  ✓ Best model saved: {model_path}")
-            else:
-                self.patience_counter += 1
+            # Calculate metrics
+            batch_metrics = metrics(outputs, masks)
+            epoch_metrics['dice'] += batch_metrics['dice']
+            epoch_metrics['iou'] += batch_metrics['iou']
             
-            # Early stopping
-            if self.patience_counter >= self.patience:
-                print(f"\n✓ Early stopping at epoch {epoch+1}")
-                break
+            # Update progress bar
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'dice': f'{batch_metrics["dice"]:.4f}'
+            })
         
-        print(f"\n✓ Training complete!")
-        print(f"  Best Dice Score: {self.best_val_dice:.4f}")
+        # Average epoch metrics
+        avg_loss = epoch_loss / len(train_loader)
+        avg_dice = epoch_metrics['dice'] / len(train_loader)
+        avg_iou = epoch_metrics['iou'] / len(train_loader)
+        
+        # Update scheduler
+        scheduler.step(avg_loss)
+        
+        print(f"Epoch {epoch+1}/{num_epochs} - "
+              f"Loss: {avg_loss:.4f}, "
+              f"Dice: {avg_dice:.4f}, "
+              f"IoU: {avg_iou:.4f}")
+        
+        # Save best model
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch+1,
+                loss=best_loss,
+                checkpoint_dir=checkpoint_dir,
+                filename=checkpoint_name
+            )
+            print(f"  ✓ Saved best model (loss: {best_loss:.4f})")
+    
+    print("\n" + "=" * 80)
+    print("TRAINING COMPLETED")
+    print("=" * 80)
+    print(f"Best loss: {best_loss:.4f}")
+    print(f"Best model saved to: {checkpoint_dir / checkpoint_name}")
+    
+    return model, best_loss
 
 
-def main(config_path):
-    """Main training function"""
+def main():
+    parser = argparse.ArgumentParser(description='Cloud Segmentation Training')
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to config file (default: config/config.yaml)')
+    parser.add_argument('--strategy', type=str, default='weighted',
+                        choices=['concat', 'weighted', 'round_robin', 'balanced', 'sample'],
+                        help='Dataset sampling strategy (default: weighted)')
+    parser.add_argument('--datasets', type=str, nargs='+', default=None,
+                        help='List of datasets to use (default: all available)')
+    parser.add_argument('--sample-size', type=int, default=None,
+                        help='Number of samples per dataset for quick validation')
+    parser.add_argument('--quick', action='store_true',
+                        help='Quick training mode (fewer epochs)')
+    
+    args = parser.parse_args()
     
     # Load config
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    if args.config:
+        config = load_config(Path(args.config))
+    else:
+        config = load_config()
     
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}\n")
-    
-    # Create trainer (NOTE: Data loading would be implemented here)
-    trainer = Trainer(config, device)
-    
-    print("Configuration loaded:")
-    print(yaml.dump(config, default_flow_style=False))
-    
-    # Note: You would load train and val dataloaders here
-    # train_loader = create_train_loader(config)
-    # val_loader = create_val_loader(config)
-    # trainer.train(train_loader, val_loader)
+    # Run training
+    train(
+        config=config,
+        strategy=args.strategy,
+        dataset_names=args.datasets,
+        sample_size=args.sample_size,
+        quick=args.quick
+    )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Train UNet for cloud segmentation')
-    parser.add_argument('--config', type=str, default='config/config.yaml',
-                       help='Path to config file')
-    
-    args = parser.parse_args()
-    main(args.config)
+    main()

@@ -1,40 +1,81 @@
-# Project Configuration for Cloud Segmentation
-
-# Data Configuration
-data:
-  train_images: "./data/processed/train/images"
-  train_masks: "./data/processed/train/masks"
-  val_images: "./data/processed/val/images"
-  val_masks: "./data/processed/val/masks"
-  test_images: "./data/processed/test/images"
-  test_masks: "./data/processed/test/masks"
-  image_size: 256
+# Cloud Segmentation Project Configuration
+# Optimized configuration for production
 
 # Model Configuration
 model:
-  name: "UNet"
-  in_channels: 3          # RGB images
-  out_channels: 1         # Binary segmentation
-  init_features: 64       # Initial number of features
-  bilinear: true          # Use bilinear upsampling
+  architecture: "Unet"
+  encoder_name: "resnet34"
+  encoder_weights: "imagenet"
+  in_channels: 4
+  out_channels: 1
+  activation: "sigmoid"
+  model_kwargs:
+    encoder_depth: 5
+    decoder_channels: [256, 128, 64, 32, 16]
 
 # Training Configuration
 training:
-  epochs: 100
-  batch_size: 16
+  epochs: 20
+  batch_size: 8
   learning_rate: 0.001
-  weight_decay: 1e-5
-  optimizer: "adam"       # Options: adam, sgd
-  loss: "dice_bce"        # Options: bce, dice, dice_bce, focal, iou
-  num_workers: 4
-  patience: 15            # Early stopping patience
+  weight_decay: 0.00001
+  optimizer: "adam"
+  loss: "dice_bce"
+  num_workers: 0
+  patience: 8
   checkpoint_dir: "./checkpoints"
+  scheduler_patience: 3
+  scheduler_factor: 0.5
 
-# Augmentation Configuration (optional)
-augmentation:
-  enabled: true
-  horizontal_flip: 0.5
-  vertical_flip: 0.5
-  rotation: 15
-  brightness: 0.2
-  contrast: 0.2
+# Data Configuration
+data:
+  min_cloud_ratio: 0.1
+  max_cloud_ratio: 0.9
+  train_val_split: 0.8
+  target_channels: 4
+  mask_threshold: 127
+  normalize: true
+
+# Datasets Configuration
+datasets:
+  "38cloud":
+    name: "38-Cloud"
+    base_path: "/root/.cache/kagglehub/datasets/sorour/38cloud-cloud-segmentation-in-satellite-images/versions/4"
+    schedule_file: "./data/38cloud/train_patches.csv"
+    bands: ["blue", "green", "red", "nir"]
+    mask_suffix: "gt"
+    file_extension: ".TIF"
+    weight: 1.0
+    train_dir: "38-Cloud_training"
+  "95cloud":
+    name: "95-Cloud"
+    base_path: "/root/.cache/kagglehub/datasets/sorour/95cloud-cloud-segmentation-on-satellite-images/versions/3"
+    schedule_file: "./data/95cloud/train_patches.csv"
+    bands: ["blue", "green", "red", "nir"]
+    mask_suffix: "gt"
+    file_extension: ".TIF"
+    weight: 2.0
+    train_dir: "95-cloud_training_only_additional_to38-cloud"
+  "cloud_cover":
+    name: "Cloud Cover Detection"
+    base_path: "./data/cloud_cover_detection"
+    schedule_file: "./data/cloud_cover_detection/train_patches.csv"
+    bands: ["blue", "green", "red", "nir"]
+    band_files: ["B02.tif", "B03.tif", "B04.tif", "B08.tif"]
+    mask_suffix: ""
+    mask_file: "{name}.tif"
+    mask_threshold: 0
+    file_extension: ".tif"
+    weight: 1.0
+    train_dir: "data"
+
+# Sampling Strategies
+sampling:
+  default_strategy: "weighted"
+  sample_size: 100  # For quick validation sampling
+
+# Logging & Output
+logging:
+  log_dir: "./logs"
+  save_best_only: true
+  save_freq: 5
