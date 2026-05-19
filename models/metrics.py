@@ -60,3 +60,17 @@ class SegmentationMetrics:
         iou = (intersection + smooth) / (union + smooth)
         return iou.item()
 
+    def __call__(self, preds, targets):
+        """
+        Calculate all metrics
+        Args:
+            preds: Model predictions (batch, 1, H, W)
+            targets: Ground truth masks (batch, 1, H, W)
+        Returns:
+            Dictionary with metrics
+        """
+        return {
+            'dice': self.dice_score(preds, targets),
+            'iou': self.iou_score(preds, targets)
+        }
+

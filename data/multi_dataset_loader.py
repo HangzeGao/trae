@@ -172,7 +172,7 @@ class CloudSegmentationDataset(Dataset):
             train_path = base_path
         
         # 检查是否有 band_files 配置（用于新格式）
-        if hasattr(self.config, 'band_files'):
+        if hasattr(self.config, 'band_files') and self.config.band_files is not None:
             band_idx = self.config.bands.index(band) if band in self.config.bands else None
             if band_idx is not None and band_idx < len(self.config.band_files):
                 band_file = self.config.band_files[band_idx]
@@ -199,7 +199,7 @@ class CloudSegmentationDataset(Dataset):
             train_path = base_path
         
         # 检查是否有 mask_file 配置（用于新格式）
-        if hasattr(self.config, 'mask_file'):
+        if hasattr(self.config, 'mask_file') and self.config.mask_file is not None:
             mask_file = self.config.mask_file.format(name=name)
             possible_paths = [
                 train_path / "train_labels" / mask_file,
@@ -341,7 +341,7 @@ class CloudSegmentationDataset(Dataset):
             train_path = base_path
         
         # 检查是否有 band_files 配置（用于新格式）
-        if hasattr(self.config, 'band_files'):
+        if hasattr(self.config, 'band_files') and self.config.band_files is not None:
             band_idx = self.config.bands.index(band) if band in self.config.bands else None
             if band_idx is not None and band_idx < len(self.config.band_files):
                 band_file = self.config.band_files[band_idx]
@@ -376,7 +376,7 @@ class CloudSegmentationDataset(Dataset):
             train_path = base_path
         
         # 检查是否有 mask_file 配置（用于新格式）
-        if hasattr(self.config, 'mask_file'):
+        if hasattr(self.config, 'mask_file') and self.config.mask_file is not None:
             mask_file = self.config.mask_file.format(name=name)
             possible_path = train_path / "train_labels" / mask_file
             if possible_path.exists():

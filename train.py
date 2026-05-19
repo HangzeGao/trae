@@ -88,8 +88,7 @@ def train(config, strategy="weighted", dataset_names=None, sample_size=None, qui
         optimizer,
         mode='min',
         patience=config.training.get('scheduler_patience', 3),
-        factor=config.training.get('scheduler_factor', 0.5),
-        verbose=True
+        factor=config.training.get('scheduler_factor', 0.5)
     )
     
     # Training setup
