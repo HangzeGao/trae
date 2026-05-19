@@ -3,15 +3,22 @@
 
 # Model Configuration
 model:
-  architecture: "Unet"
-  encoder_name: "resnet34"
-  encoder_weights: "imagenet"
+  architecture: "SkySensePlusPlus"
   in_channels: 4
   out_channels: 1
-  activation: "sigmoid"
-  model_kwargs:
-    encoder_depth: 5
-    decoder_channels: [256, 128, 64, 32, 16]
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 3
+  patch_size: 16
+
+# SkySense++ Model Configuration (for reference)
+# skysense:
+#   in_channels: 4
+#   embed_dim: 256
+#   num_heads: 8
+#   num_layers: 6
+#   patch_size: 16
+#   out_channels: 1
 
 # Training Configuration
 training:

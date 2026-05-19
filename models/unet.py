@@ -45,10 +45,10 @@ def create_model(
     **kwargs
 ):
     """
-    Factory function to create segmentation models using SMP library.
+    Factory function to create segmentation models using SMP library or SkySense++.
     
     Args:
-        architecture: Model architecture (Unet, UnetPlusPlus, DeepLabV3, DeepLabV3Plus, FPN, PSPNet, Linknet, MAnet, PAN)
+        architecture: Model architecture (Unet, UnetPlusPlus, DeepLabV3, DeepLabV3Plus, FPN, PSPNet, Linknet, MAnet, PAN, SkySensePlusPlus)
         encoder_name: Encoder backbone name (resnet18, resnet34, resnet50, efficientnet-b0 to efficientnet-b7, etc.)
         encoder_weights: Pretrained weights ("imagenet" or None)
         in_channels: Number of input channels
@@ -59,6 +59,14 @@ def create_model(
     Returns:
         PyTorch model
     """
+    if architecture == "SkySensePlusPlus":
+        from .skysense import SkySensePlusPlus
+        return SkySensePlusPlus(
+            in_channels=in_channels,
+            out_channels=classes,
+            **kwargs
+        )
+    
     arch_map = {
         "Unet": smp.Unet,
         "UnetPlusPlus": smp.UnetPlusPlus,
@@ -72,7 +80,7 @@ def create_model(
     }
     
     if architecture not in arch_map:
-        raise ValueError(f"Unsupported architecture: {architecture}. Available: {list(arch_map.keys())}")
+        raise ValueError(f"Unsupported architecture: {architecture}. Available: {list(arch_map.keys()) + ['SkySensePlusPlus']}")
     
     model_class = arch_map[architecture]
     model = model_class(
