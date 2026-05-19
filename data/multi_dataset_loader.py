@@ -8,21 +8,24 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 import numpy as np
 from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, WeightedRandomSampler, Subset
 from dataclasses import dataclass, field
 from enum import Enum
 import random
 
 
 class MergeStrategy(Enum):
-    CONCAT = "concat"
-    WEIGHTED = "weighted"
-    ROUND_ROBIN = "round_robin"
-    BALANCED = "balanced"
+    """数据集合并策略"""
+    CONCAT = "concat"           # 简单拼接
+    WEIGHTED = "weighted"       # 加权采样
+    ROUND_ROBIN = "round_robin" # 轮询采样
+    BALANCED = "balanced"       # 平衡采样（相同数量）
+    SAMPLE = "sample"           # 快速验证采样（从每个数据集采样少量样本）
 
 
 @dataclass
 class DatasetConfig:
+    """数据集配置"""
     name: str
     base_path: Path
     schedule_file: str
@@ -78,7 +81,8 @@ class CloudSegmentationDataset(Dataset):
         mask_threshold: Optional[int] = None,
         target_channels: int = 4,
         augment: bool = False,
-        skip_invalid: bool = True
+        skip_invalid: bool = True,
+        sample_size: Optional[int] = None  # 快速验证时采样数量
     ):
         self.dataset_name = dataset_name
         self.transform = transform
@@ -86,6 +90,7 @@ class CloudSegmentationDataset(Dataset):
         self.target_channels = target_channels
         self.augment = augment
         self.skip_invalid = skip_invalid
+        self.sample_size = sample_size
         
         if dataset_name not in DATASET_REGISTRY:
             raise ValueError(f"未知的数据集: {dataset_name}")
@@ -102,12 +107,16 @@ class CloudSegmentationDataset(Dataset):
         if self.skip_invalid:
             self.schedule_df = self._filter_valid_samples()
         
+        # 采样（用于快速验证）
+        if self.sample_size is not None and self.sample_size < len(self.schedule_df):
+            self.schedule_df = self.schedule_df.sample(n=self.sample_size, random_state=42)
+            print(f"快速采样: {self.config.name} -> {len(self.schedule_df)} 样本")
+        
         self.mask_threshold = mask_threshold if mask_threshold is not None else self.config.mask_threshold
         
         if not self.config.base_path.exists():
             raise FileNotFoundError(f"数据集路径不存在: {self.config.base_path}")
         
-        # 缓存第一个有效样本
         self._first_valid_sample = None
     
     def _generate_schedule(self):
@@ -119,20 +128,17 @@ class CloudSegmentationDataset(Dataset):
         return pd.DataFrame(samples)
     
     def _filter_valid_samples(self):
-        """过滤无效样本（文件不存在的）"""
         valid_names = []
         
         for idx, row in self.schedule_df.iterrows():
             name = row['name']
             
-            # 检查所有波段是否存在
             all_bands_exist = True
             for band in self.config.bands:
                 if not self._check_band_exists(band, name):
                     all_bands_exist = False
                     break
             
-            # 检查掩码是否存在
             if all_bands_exist and not self._check_mask_exists(name):
                 all_bands_exist = False
             
@@ -143,7 +149,6 @@ class CloudSegmentationDataset(Dataset):
         return pd.DataFrame({'name': valid_names})
     
     def _check_band_exists(self, band: str, name: str) -> bool:
-        """检查波段文件是否存在"""
         base_path = self.config.base_path
         
         if self.config.train_dir:
@@ -160,7 +165,6 @@ class CloudSegmentationDataset(Dataset):
         return any(path.exists() for path in possible_paths)
     
     def _check_mask_exists(self, name: str) -> bool:
-        """检查掩码文件是否存在"""
         base_path = self.config.base_path
         
         if self.config.train_dir:
@@ -183,7 +187,6 @@ class CloudSegmentationDataset(Dataset):
         name = self.schedule_df.iloc[idx]['name']
         
         try:
-            # 加载波段
             image_bands = []
             for band in self.config.bands:
                 band_path = self._find_band_path(band, name)
@@ -193,7 +196,6 @@ class CloudSegmentationDataset(Dataset):
             image = np.stack(image_bands, axis=-1)
             image = self._pad_channels(image)
             
-            # 加载掩码
             mask_path = self._find_mask_path(name)
             mask = np.array(Image.open(mask_path))
             mask = (mask > self.mask_threshold).astype(np.float32)
@@ -220,11 +222,9 @@ class CloudSegmentationDataset(Dataset):
                 raise
     
     def _get_first_valid_sample(self):
-        """获取第一个有效样本"""
         if self._first_valid_sample is not None:
             return self._first_valid_sample
         
-        # 查找第一个有效样本
         for idx in range(len(self)):
             try:
                 name = self.schedule_df.iloc[idx]['name']
@@ -371,7 +371,7 @@ class RoundRobinSampler:
 class MultiDatasetManager:
     
     def __init__(self, dataset_names: List[str], **dataset_kwargs):
-        self.dataset_names = dataset_names
+        self.dataset_name = dataset_names
         self.dataset_kwargs = dataset_kwargs
         self.datasets = []
         
@@ -388,8 +388,11 @@ class MultiDatasetManager:
         batch_size: int = 8,
         shuffle: bool = True,
         num_workers: int = 0,
+        sample_size: int = 100,  # 快速验证时每个数据集采样数量
         **dataloader_kwargs
     ) -> DataLoader:
+        """根据策略创建 DataLoader"""
+        
         strategy = MergeStrategy(strategy.lower()) if isinstance(strategy, str) else strategy
         
         if strategy == MergeStrategy.CONCAT:
@@ -404,6 +407,9 @@ class MultiDatasetManager:
         elif strategy == MergeStrategy.BALANCED:
             return self._create_balanced_dataloader(batch_size, num_workers, **dataloader_kwargs)
         
+        elif strategy == MergeStrategy.SAMPLE:
+            return self._create_sample_dataloader(batch_size, shuffle, num_workers, sample_size, **dataloader_kwargs)
+        
         else:
             raise ValueError(f"未知的合并策略: {strategy}")
     
@@ -414,7 +420,7 @@ class MultiDatasetManager:
     def _create_weighted_dataloader(self, batch_size, num_workers, **kwargs):
         weights = []
         for i, ds in enumerate(self.datasets):
-            ds_weight = DATASET_REGISTRY[self.dataset_names[i]].weight
+            ds_weight = DATASET_REGISTRY[self.dataset_name[i]].weight
             weights.extend([ds_weight] * len(ds))
         
         sampler = WeightedRandomSampler(weights, num_samples=self.total_size, replacement=True)
@@ -450,6 +456,34 @@ class MultiDatasetManager:
         sampler = BalancedSampler(balanced_indices)
         concat_dataset = ConcatDataset(self.datasets)
         return DataLoader(concat_dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers, **kwargs)
+    
+    def _create_sample_dataloader(self, batch_size, shuffle, num_workers, sample_size, **kwargs):
+        """
+        快速验证采样策略
+        
+        从每个数据集随机采样指定数量的样本，用于快速验证模型性能。
+        特点：
+        - 每个数据集采样数量相等（默认100个）
+        - 速度快，适合快速验证
+        - 可用于训练前的快速测试
+        """
+        sample_datasets = []
+        
+        for ds in self.datasets:
+            # 从每个数据集采样指定数量的样本
+            if len(ds) > sample_size:
+                indices = np.random.choice(len(ds), sample_size, replace=False)
+                sample_ds = Subset(ds, indices)
+            else:
+                sample_ds = ds
+            
+            sample_datasets.append(sample_ds)
+        
+        concat_dataset = ConcatDataset(sample_datasets)
+        print(f"快速采样策略: {len(sample_datasets)} 个数据集，每个采样 {sample_size} 个样本")
+        print(f"总样本数: {len(concat_dataset)}")
+        
+        return DataLoader(concat_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, **kwargs)
 
 
 def get_combined_dataloader(
@@ -458,10 +492,18 @@ def get_combined_dataloader(
     batch_size: int = 8,
     shuffle: bool = True,
     num_workers: int = 0,
+    sample_size: int = 100,
     **dataset_kwargs
 ) -> DataLoader:
+    """便捷函数：创建合并数据集的 DataLoader"""
     manager = MultiDatasetManager(dataset_names, **dataset_kwargs)
-    return manager.create_dataloader(strategy=strategy, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return manager.create_dataloader(
+        strategy=strategy, 
+        batch_size=batch_size, 
+        shuffle=shuffle, 
+        num_workers=num_workers,
+        sample_size=sample_size
+    )
 
 
 def list_available_datasets_with_stats() -> List[Dict[str, Any]]:
@@ -513,10 +555,36 @@ def print_dataset_summary():
     print("\n" + "=" * 80)
 
 
+def print_strategy_summary():
+    """打印所有采样策略的说明"""
+    strategies = [
+        ("concat", "简单拼接", "将所有数据集简单拼接在一起，保持原始比例", "训练"),
+        ("weighted", "加权采样", "根据权重配置随机采样，权重高的数据集采样概率更高", "训练"),
+        ("round_robin", "轮询采样", "按顺序从每个数据集取样本，确保均匀采样", "训练"),
+        ("balanced", "平衡采样", "从每个数据集取相同数量的样本", "训练/验证"),
+        ("sample", "快速验证采样", "从每个数据集采样少量样本（默认100个），用于快速验证", "快速验证")
+    ]
+    
+    print("=" * 80)
+    print("采样策略说明")
+    print("=" * 80)
+    
+    print(f"\n{'策略':<15} {'名称':<12} {'说明'}")
+    print("-" * 80)
+    
+    for strategy, name, desc, usage in strategies:
+        print(f"{strategy:<15} {name:<12} {desc}")
+        print(f"{'':<27} 适用场景: {usage}")
+    
+    print("\n" + "=" * 80)
+
+
 if __name__ == "__main__":
     print_dataset_summary()
     
-    print("\n\n示例: 创建不同策略的 DataLoader")
+    print("\n\n" + "=" * 80)
+    print("示例: 创建不同策略的 DataLoader")
+    print("=" * 80)
     
     print("\n1. Concat 策略 (简单拼接):")
     loader = get_combined_dataloader(
@@ -550,4 +618,14 @@ if __name__ == "__main__":
     )
     print(f"   每个数据集取相同数量样本")
     
+    print("\n5. Sample 策略 (快速验证采样):")
+    loader = get_combined_dataloader(
+        dataset_names=["38cloud", "95cloud"],
+        strategy="sample",
+        batch_size=4,
+        sample_size=50
+    )
+    print(f"   每个数据集采样 50 个样本，总样本数: {len(loader.dataset)}")
+    
     print("\n" + "=" * 80)
+    print_strategy_summary()
