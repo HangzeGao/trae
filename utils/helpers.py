@@ -26,12 +26,18 @@ def set_seed(seed: int = 42):
 
 def get_device() -> torch.device:
     """
-    Get available device (CUDA or CPU).
+    Get available device (CUDA, MPS, or CPU).
+    Supports Apple Silicon chips.
     
     Returns:
         torch.device object
     """
-    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return torch.device('mps')
+    else:
+        return torch.device('cpu')
 
 
 def count_parameters(model: torch.nn.Module) -> int:
