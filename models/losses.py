@@ -1,6 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
+
+try:
+    from utils.config import Config
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
 
 
 class DiceLoss(nn.Module):
@@ -68,14 +75,38 @@ class IoULoss(nn.Module):
         return 1.0 - iou
 
 
-def get_loss_function(loss_name="dice_bce"):
-    """Get loss function by name"""
+def get_loss_function_from_config(config: Config, **kwargs) -> nn.Module:
+    """
+    Get loss function from Config object.
+    
+    Args:
+        config: Config object
+        **kwargs: Additional loss kwargs
+    
+    Returns:
+        Loss function module
+    """
+    loss_name = config.training.get('loss', 'dice_bce')
+    return get_loss_function(loss_name, **kwargs)
+
+
+def get_loss_function(loss_name="dice_bce", **kwargs) -> nn.Module:
+    """
+    Get loss function by name.
+    
+    Args:
+        loss_name: Name of loss function
+        **kwargs: Additional parameters for loss
+    
+    Returns:
+        Loss function module
+    """
     
     loss_dict = {
         "bce": nn.BCELoss(),
         "dice": DiceLoss(),
-        "dice_bce": BCEWithDiceLoss(),
-        "focal": FocalLoss(),
+        "dice_bce": BCEWithDiceLoss(**kwargs),
+        "focal": FocalLoss(**kwargs),
         "iou": IoULoss(),
     }
     

@@ -9,39 +9,44 @@ import numpy as np
 from PIL import Image
 import torch
 from torch.utils.data import Dataset, DataLoader, ConcatDataset, WeightedRandomSampler, Subset
-from dataclasses import dataclass, field
-from enum import Enum
 import random
 
+try:
+    from utils.config import Config, DatasetConfig, MergeStrategy
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+    from dataclasses import dataclass, field
+    from enum import Enum
+    
+    class MergeStrategy(Enum):
+        """数据集合并策略"""
+        CONCAT = "concat"
+        WEIGHTED = "weighted"
+        ROUND_ROBIN = "round_robin"
+        BALANCED = "balanced"
+        SAMPLE = "sample"
+    
+    @dataclass
+    class DatasetConfig:
+        """数据集配置"""
+        name: str
+        base_path: Path
+        schedule_file: str
+        bands: List[str] = field(default_factory=lambda: ['red', 'green', 'blue', 'nir'])
+        mask_suffix: str = "gt"
+        mask_threshold: int = 127
+        file_extension: str = ".TIF"
+        weight: float = 1.0
+        train_dir: Optional[str] = None
 
-class MergeStrategy(Enum):
-    """数据集合并策略"""
-    CONCAT = "concat"           # 简单拼接
-    WEIGHTED = "weighted"       # 加权采样
-    ROUND_ROBIN = "round_robin" # 轮询采样
-    BALANCED = "balanced"       # 平衡采样（相同数量）
-    SAMPLE = "sample"           # 快速验证采样（从每个数据集采样少量样本）
 
-
-@dataclass
-class DatasetConfig:
-    """数据集配置"""
-    name: str
-    base_path: Path
-    schedule_file: str
-    bands: List[str] = field(default_factory=lambda: ['red', 'green', 'blue', 'nir'])
-    mask_suffix: str = "gt"
-    mask_threshold: int = 127
-    file_extension: str = ".TIF"
-    weight: float = 1.0
-    train_dir: Optional[str] = None
-
-
-DATASET_REGISTRY: Dict[str, DatasetConfig] = {
+# Fallback registry if config is not available
+DEFAULT_DATASET_REGISTRY: Dict[str, DatasetConfig] = {
     "38cloud": DatasetConfig(
         name="38-Cloud",
         base_path=Path("/root/.cache/kagglehub/datasets/sorour/38cloud-cloud-segmentation-in-satellite-images/versions/4"),
-        schedule_file="/workspace/data/38cloud/train_patches.csv",
+        schedule_file="./data/38cloud/train_patches.csv",
         bands=['blue', 'green', 'red', 'nir'],
         mask_suffix="gt",
         file_extension=".TIF",
@@ -51,23 +56,29 @@ DATASET_REGISTRY: Dict[str, DatasetConfig] = {
     "95cloud": DatasetConfig(
         name="95-Cloud",
         base_path=Path("/root/.cache/kagglehub/datasets/sorour/95cloud-cloud-segmentation-on-satellite-images/versions/3"),
-        schedule_file="/workspace/data/95cloud/train_patches.csv",
+        schedule_file="./data/95cloud/train_patches.csv",
         bands=['blue', 'green', 'red', 'nir'],
         mask_suffix="gt",
         file_extension=".TIF",
         weight=2.0,
         train_dir="95-cloud_training_only_additional_to38-cloud"
-    ),
-    "cloud-cover": DatasetConfig(
-        name="Cloud Cover Detection",
-        base_path=Path("/root/.cache/kagglehub/datasets/hmendonca/cloud-cover-detection"),
-        schedule_file="/workspace/data/cloud-cover/train_patches.csv",
-        bands=['red', 'green', 'blue'],
-        mask_suffix="mask",
-        file_extension=".png",
-        weight=1.0
     )
 }
+
+
+def get_dataset_registry(config: Optional[Config] = None) -> Dict[str, DatasetConfig]:
+    """
+    Get dataset registry, either from config or fallback.
+    
+    Args:
+        config: Optional Config object
+    
+    Returns:
+        Dictionary of dataset configurations
+    """
+    if config is not None and config.datasets:
+        return config.datasets
+    return DEFAULT_DATASET_REGISTRY
 
 
 class CloudSegmentationDataset(Dataset):
@@ -82,7 +93,8 @@ class CloudSegmentationDataset(Dataset):
         target_channels: int = 4,
         augment: bool = False,
         skip_invalid: bool = True,
-        sample_size: Optional[int] = None  # 快速验证时采样数量
+        sample_size: Optional[int] = None,
+        config: Optional[Config] = None
     ):
         self.dataset_name = dataset_name
         self.transform = transform
@@ -91,11 +103,14 @@ class CloudSegmentationDataset(Dataset):
         self.augment = augment
         self.skip_invalid = skip_invalid
         self.sample_size = sample_size
+        self._config = config
         
-        if dataset_name not in DATASET_REGISTRY:
+        registry = get_dataset_registry(config)
+        
+        if dataset_name not in registry:
             raise ValueError(f"未知的数据集: {dataset_name}")
         
-        self.config = DATASET_REGISTRY[dataset_name]
+        self.config = registry[dataset_name]
         self.schedule_path = schedule_path or self.config.schedule_file
         
         if Path(self.schedule_path).exists():
@@ -370,14 +385,17 @@ class RoundRobinSampler:
 
 class MultiDatasetManager:
     
-    def __init__(self, dataset_names: List[str], **dataset_kwargs):
-        self.dataset_name = dataset_names
+    def __init__(self, dataset_names: List[str], config: Optional[Config] = None, **dataset_kwargs):
+        self.dataset_names = dataset_names
         self.dataset_kwargs = dataset_kwargs
+        self._config = config
         self.datasets = []
         
+        registry = get_dataset_registry(config)
+        
         for name in dataset_names:
-            if DATASET_REGISTRY[name].base_path.exists():
-                self.datasets.append(CloudSegmentationDataset(name, **dataset_kwargs))
+            if name in registry and registry[name].base_path.exists():
+                self.datasets.append(CloudSegmentationDataset(name, config=config, **dataset_kwargs))
         
         self.sizes = [len(ds) for ds in self.datasets]
         self.total_size = sum(self.sizes)
@@ -418,9 +436,11 @@ class MultiDatasetManager:
         return DataLoader(concat_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, **kwargs)
     
     def _create_weighted_dataloader(self, batch_size, num_workers, **kwargs):
+        registry = get_dataset_registry(self._config)
         weights = []
         for i, ds in enumerate(self.datasets):
-            ds_weight = DATASET_REGISTRY[self.dataset_name[i]].weight
+            ds_name = self.dataset_names[i]
+            ds_weight = registry[ds_name].weight
             weights.extend([ds_weight] * len(ds))
         
         sampler = WeightedRandomSampler(weights, num_samples=self.total_size, replacement=True)
@@ -493,10 +513,11 @@ def get_combined_dataloader(
     shuffle: bool = True,
     num_workers: int = 0,
     sample_size: int = 100,
+    config: Optional[Config] = None,
     **dataset_kwargs
 ) -> DataLoader:
     """便捷函数：创建合并数据集的 DataLoader"""
-    manager = MultiDatasetManager(dataset_names, **dataset_kwargs)
+    manager = MultiDatasetManager(dataset_names, config=config, **dataset_kwargs)
     return manager.create_dataloader(
         strategy=strategy, 
         batch_size=batch_size, 
@@ -506,39 +527,40 @@ def get_combined_dataloader(
     )
 
 
-def list_available_datasets_with_stats() -> List[Dict[str, Any]]:
+def list_available_datasets_with_stats(config: Optional[Config] = None) -> List[Dict[str, Any]]:
     result = []
+    registry = get_dataset_registry(config)
     
-    for key, config in DATASET_REGISTRY.items():
-        available = config.base_path.exists()
+    for key, ds_config in registry.items():
+        available = ds_config.base_path.exists()
         sample_count = 0
         
         if available:
-            schedule_path = Path(config.schedule_file)
+            schedule_path = Path(ds_config.schedule_file)
             if schedule_path.exists():
                 df = pd.read_csv(schedule_path)
                 sample_count = len(df)
             else:
-                tif_count = len(list(config.base_path.rglob("*.TIF")))
-                sample_count = tif_count // (len(config.bands) + 1)
+                tif_count = len(list(ds_config.base_path.rglob("*.TIF")))
+                sample_count = tif_count // (len(ds_config.bands) + 1)
         
         result.append({
             "key": key,
-            "name": config.name,
-            "bands": config.bands,
-            "num_bands": len(config.bands),
-            "file_extension": config.file_extension,
-            "weight": config.weight,
+            "name": ds_config.name,
+            "bands": ds_config.bands,
+            "num_bands": len(ds_config.bands),
+            "file_extension": ds_config.file_extension,
+            "weight": ds_config.weight,
             "available": available,
             "sample_count": sample_count,
-            "base_path": str(config.base_path)
+            "base_path": str(ds_config.base_path)
         })
     
     return result
 
 
-def print_dataset_summary():
-    datasets = list_available_datasets_with_stats()
+def print_dataset_summary(config: Optional[Config] = None):
+    datasets = list_available_datasets_with_stats(config)
     
     print("=" * 80)
     print("数据集摘要")
@@ -548,7 +570,7 @@ def print_dataset_summary():
     print("-" * 80)
     
     for ds in datasets:
-        status = "✅" if ds['available'] else "❌"
+        status = "✓" if ds['available'] else "✗"
         bands_str = ", ".join(ds['bands'])[:15]
         print(f"{ds['name']:<20} {bands_str:<15} {ds['file_extension']:<10} {ds['sample_count']:<8} {ds['weight']:<6} {status}")
     
@@ -580,7 +602,14 @@ def print_strategy_summary():
 
 
 if __name__ == "__main__":
-    print_dataset_summary()
+    # Try to load config
+    try:
+        from utils import load_config
+        config = load_config()
+        print_dataset_summary(config)
+    except ImportError:
+        config = None
+        print_dataset_summary()
     
     print("\n\n" + "=" * 80)
     print("示例: 创建不同策略的 DataLoader")
@@ -590,7 +619,8 @@ if __name__ == "__main__":
     loader = get_combined_dataloader(
         dataset_names=["38cloud", "95cloud"],
         strategy="concat",
-        batch_size=4
+        batch_size=4,
+        config=config
     )
     print(f"   总样本数: {len(loader.dataset)}")
     
@@ -598,7 +628,8 @@ if __name__ == "__main__":
     loader = get_combined_dataloader(
         dataset_names=["38cloud", "95cloud"],
         strategy="weighted",
-        batch_size=4
+        batch_size=4,
+        config=config
     )
     print(f"   权重配置: 38cloud=1.0, 95cloud=2.0")
     
@@ -606,7 +637,8 @@ if __name__ == "__main__":
     loader = get_combined_dataloader(
         dataset_names=["38cloud", "95cloud"],
         strategy="round_robin",
-        batch_size=4
+        batch_size=4,
+        config=config
     )
     print(f"   轮询顺序: 38cloud -> 95cloud -> 38cloud -> ...")
     
@@ -614,7 +646,8 @@ if __name__ == "__main__":
     loader = get_combined_dataloader(
         dataset_names=["38cloud", "95cloud"],
         strategy="balanced",
-        batch_size=4
+        batch_size=4,
+        config=config
     )
     print(f"   每个数据集取相同数量样本")
     
@@ -623,7 +656,8 @@ if __name__ == "__main__":
         dataset_names=["38cloud", "95cloud"],
         strategy="sample",
         batch_size=4,
-        sample_size=50
+        sample_size=50,
+        config=config
     )
     print(f"   每个数据集采样 50 个样本，总样本数: {len(loader.dataset)}")
     

@@ -3,6 +3,36 @@ Segmentation models using segmentation_models_pytorch library.
 """
 import torch
 import segmentation_models_pytorch as smp
+from typing import Dict, Any, Optional
+
+try:
+    from utils.config import Config
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+
+
+def create_model_from_config(config: Config, **kwargs) -> torch.nn.Module:
+    """
+    Create model from Config object.
+    
+    Args:
+        config: Config object
+        **kwargs: Additional model kwargs
+    
+    Returns:
+        PyTorch model
+    """
+    model_cfg = config.model
+    return create_model(
+        architecture=model_cfg.get('architecture', 'Unet'),
+        encoder_name=model_cfg.get('encoder_name', 'resnet34'),
+        encoder_weights=model_cfg.get('encoder_weights', 'imagenet'),
+        in_channels=model_cfg.get('in_channels', 4),
+        classes=model_cfg.get('out_channels', 1),
+        activation=model_cfg.get('activation', 'sigmoid'),
+        **{**model_cfg.get('model_kwargs', {}), **kwargs}
+    )
 
 
 def create_model(
