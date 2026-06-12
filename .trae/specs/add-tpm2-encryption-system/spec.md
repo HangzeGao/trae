@@ -1,5 +1,12 @@
 # 基于 TPM 2.0 的软硬结合加解密系统 Spec
 
+## 技术选型
+- **开发语言**: Go
+- **TPM 库**: github.com/google/go-tpm (Google 维护，TPM 2.0 完整支持)
+- **API 形式**: REST API (HTTP/HTTPS)，基于 Go 标准库 net/http
+- **加解密算法**: AES-256-GCM (数据加解密)，TPM 内部 RSA/ECC (密钥封装)
+- **数据密钥存储**: 仅存储加密后的密文，持久化到本地文件或数据库
+
 ## Why
 当前系统缺乏基于硬件安全模块的加解密能力，数据密钥以明文形式存储在内存或磁盘中，存在泄露风险。利用 TPM 2.0 芯片的硬件安全特性，可以实现根密钥永不离开芯片、数据密钥受根密钥保护的两层密钥体系，显著提升密钥安全性。
 
@@ -61,20 +68,28 @@
 - **WHEN** 数据密钥密文被篡改或与根密钥不匹配
 - **THEN** TPM 解密失败，系统返回错误信息，拒绝加解密操作
 
-### Requirement: 统一加解密服务接口
-系统 SHALL 提供 EncryptionService 统一接口，封装密钥管理和加解密操作。
+### Requirement: 统一加解密 REST API
+系统 SHALL 提供 REST API 接口，封装密钥管理和加解密操作，供用户通过 HTTP 调用。
 
 #### Scenario: 初始化服务
-- **WHEN** 应用启动并初始化 EncryptionService
-- **THEN** 服务自动连接 TPM、加载/创建根密钥，进入就绪状态
+- **WHEN** 应用启动并初始化服务
+- **THEN** 服务自动连接 TPM、加载/创建根密钥，启动 HTTP 服务进入就绪状态
 
-#### Scenario: 一站式加密
-- **WHEN** 调用 EncryptionService.encrypt(data, encryptedDataKey)
-- **THEN** 系统完成 TPM 解密数据密钥 + AES-256-GCM 加密，返回密文
+#### Scenario: 生成数据密钥
+- **WHEN** 用户调用 POST /api/v1/keys/generate
+- **THEN** 系统生成数据密钥，使用根密钥加密，返回加密后的数据密钥密文和明文数据密钥
 
-#### Scenario: 一站式解密
-- **WHEN** 调用 EncryptionService.decrypt(ciphertext, encryptedDataKey)
-- **THEN** 系统完成 TPM 解密数据密钥 + AES-256-GCM 解密，返回明文
+#### Scenario: 加密数据
+- **WHEN** 用户调用 POST /api/v1/encrypt，传入明文和加密后的数据密钥密文
+- **THEN** 系统通过 TPM 解密数据密钥 + AES-256-GCM 加密，返回密文
+
+#### Scenario: 解密数据
+- **WHEN** 用户调用 POST /api/v1/decrypt，传入密文和加密后的数据密钥密文
+- **THEN** 系统通过 TPM 解密数据密钥 + AES-256-GCM 解密，返回明文
+
+#### Scenario: 轮换数据密钥
+- **WHEN** 用户调用 POST /api/v1/keys/rotate，传入旧数据密钥密文
+- **THEN** 系统生成新数据密钥，使用根密钥加密后返回新密钥密文
 
 ### Requirement: 密钥生命周期管理
 系统 SHALL 支持数据密钥的轮换和废弃。
