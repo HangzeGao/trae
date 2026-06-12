@@ -1,0 +1,12 @@
+- [ ] Git分支 feature/gmssl-aes-sm4-embedded 已创建
+- [ ] 项目目录结构已创建（include/、src/aes/、src/sm4/、test/）
+- [ ] Makefile配置正确，包含所有指定的编译参数、预定义宏和工具链设置
+- [ ] AES-ECB加解密接口实现并可正常工作
+- [ ] AES-CBC加解密接口实现并可正常工作
+- [ ] SM4-ECB加解密接口实现并可正常工作
+- [ ] SM4-CBC加解密接口实现并可正常工作
+- [ ] 代码无OS依赖（不引用stdio/stdlib文件IO/POSIX API）
+- [ ] 统一头文件 crypto_lib.h 包含AES和SM4接口
+- [ ] AES测试用例使用标准测试向量验证通过
+- [ ] SM4测试用例使用国标测试向量验证通过
+- [ ] 交叉编译无错误和警告
