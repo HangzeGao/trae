@@ -51,6 +51,22 @@ type RotateKeyResponse struct {
 	Algorithm           Algorithm `json:"algorithm"`
 }
 
+// DecryptKeyRequest 是 POST /api/v1/keys/decrypt 的请求
+type DecryptKeyRequest struct {
+	EncryptedDataKey []byte `json:"encrypted_data_key"` // JSON 中为 base64 编码
+}
+
+// DecryptKeyResponse 是 POST /api/v1/keys/decrypt 的响应
+type DecryptKeyResponse struct {
+	PlaintextDataKey []byte `json:"plaintext_data_key"` // JSON 中为 base64 编码
+}
+
+// HealthResponse 是 GET /health 的响应
+type HealthResponse struct {
+	Status       string `json:"status"`
+	TPMAvailable bool   `json:"tpm_available"`
+}
+
 // AlgorithmInfo 描述一个受支持的算法及其模式
 type AlgorithmInfo struct {
 	Algorithm Algorithm `json:"algorithm"`

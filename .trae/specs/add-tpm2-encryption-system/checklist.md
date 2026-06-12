@@ -1,22 +1,51 @@
-- [ ] TPM 上下文初始化成功，能连接 TPM 设备或模拟器
-- [ ] 根密钥首次创建成功，再次启动能正确加载已有根密钥
-- [ ] 根密钥私钥部分不离开 TPM 芯片（代码中无导出私钥逻辑）
-- [ ] 数据密钥生成返回指定算法对应长度的随机密钥
-- [ ] 数据密钥由根密钥在 TPM 内加密，返回密文
-- [ ] 加密的数据密钥密文能通过 TPM 正确解密为明文
-- [ ] AES-128/192/256 和 SM4 算法均可正确加解密
-- [ ] GCM/CBC/CTR/CFB/OFB 模式均可正确加解密
-- [ ] GCM 模式密文包含 IV 和认证标签，认证失败时返回 ErrAuthFailed
-- [ ] KeyServer 作为独立 HTTP 服务启动，提供密钥生成/解密/轮换/算法查询 API
-- [ ] POST /api/v1/keys/generate 返回加密数据密钥和明文数据密钥
-- [ ] POST /api/v1/keys/decrypt 返回明文数据密钥
-- [ ] POST /api/v1/keys/rotate 返回新加密数据密钥和明文数据密钥
-- [ ] GET /api/v1/algorithms 返回所有支持的算法和模式列表
-- [ ] KeyServer 支持 TLS 配置，客户端与服务端通过 TLS 加密通信
-- [ ] TPM 不可用时返回 ErrTPMNotAvailable 错误
-- [ ] 数据密钥密文被篡改时 TPM 解密失败，返回 ErrKeyDecryptFailed
-- [ ] EncryptionClient 可配置多个密钥服务地址，支持故障转移
-- [ ] 多业务节点通过同一密钥服务可解密同一加密数据密钥
-- [ ] 密钥轮换功能正常，新密钥可加密数据，旧数据可用旧密钥解密后用新密钥重加密
-- [ ] 客户端一站式加密/解密流程正确
-- [ ] 配置管理支持监听地址、TLS 证书路径、TPM 设备路径等参数
+- [ ] `DecryptKeyRequest` 结构体已在 internal/model/api.go 中定义，字段 `EncryptedDataKey []byte`
+- [ ] `DecryptKeyResponse` 结构体已在 internal/model/api.go 中定义，字段 `PlaintextDataKey []byte`
+- [ ] `HealthResponse` 结构体已在 internal/model/api.go 中定义
+- [ ] `go.mod` 已添加 `github.com/google/go-tpm` 依赖
+- [ ] `go mod tidy` 执行成功，生成 go.sum
+- [ ] `internal/tpm/context.go` TPMContext 实现：能打开 TPM 设备，失败返回 ErrTPMNotAvailable；Close 能正确清理资源
+- [ ] `internal/tpm/rootkey.go` 能通过 `tpm2.CreatePrimary` 在 Owner hierarchy 创建 RSA 2048 主密钥
+- [ ] `internal/tpm/rootkey.go` 能正确解析和返回 SRK 的 RSA 公钥
+- [ ] SRK 私钥无任何导出逻辑（代码审查确认）
+- [ ] `internal/tpm/datakey.go` GenerateAndEncryptDataKey 能生成对应算法长度的随机密钥（AES-128: 16B, AES-192: 24B, AES-256: 32B, SM4: 16B）
+- [ ] GenerateAndEncryptDataKey 使用 RSA-OAEP(SHA-256) 加密数据密钥
+- [ ] `internal/tpm/datakey.go` DecryptDataKey 能通过 `tpm2.RSADecrypt` 在 TPM 内正确解密数据密钥
+- [ ] DecryptDataKey 在密文被篡改或不匹配 SRK 时返回 ErrKeyDecryptFailed
+- [ ] `internal/tpm/tpm.go` TPMService 正确封装 context + rootkey，暴露 GenerateKey/DecryptKey/RotateKey
+- [ ] `internal/config/config.go` KeyServerConfig 定义完整，支持 TPM 设备路径、监听地址、TLS 配置
+- [ ] `internal/config/config.go` ClientConfig 定义完整，支持多 URL、TLS CA 配置
+- [ ] `internal/config/config.go` 环境变量加载逻辑正确（默认值回退）
+- [ ] `internal/keyserver/service.go` KeyService 正确调用 TPMService 实现密钥操作
+- [ ] `internal/keyserver/handlers.go` 所有 API endpoint handler 实现完整（generate/decrypt/rotate/algorithms/health）
+- [ ] `internal/keyserver/handlers.go` handler 正确处理 JSON 请求/响应序列化
+- [ ] `internal/keyserver/handlers.go` handler 正确映射错误码（400/500/503）
+- [ ] `internal/keyserver/server.go` 路由注册正确：`/api/v1/keys/generate`, `/api/v1/keys/decrypt`, `/api/v1/keys/rotate`, `/api/v1/algorithms`, `/health`
+- [ ] `internal/keyserver/server.go` 支持 TLS 和非 TLS 两种启动方式
+- [ ] `internal/client/client.go` EncryptionClient 实现：NewClient 支持多 URL + TLS 配置
+- [ ] `internal/client/client.go` getPlaintextKey 先查缓存再请求 KeyServer，带故障转移逻辑
+- [ ] `internal/client/client.go` Encrypt 一站式：获取密钥 → 本地 AES/SM4 加密 → 返回 CiphertextFormat JSON → 清零密钥
+- [ ] `internal/client/client.go` Decrypt 一站式：获取密钥 → 反序列化 CiphertextFormat → 本地 AES/SM4 解密 → 返回明文 → 清零密钥
+- [ ] `internal/client/client.go` GenerateKey/RotateKey 正确代理 KeyServer
+- [ ] `cmd/keyserver/main.go` 能正确启动服务：读取配置 → 初始化 TPM → 启动 HTTP(S) 服务 → 支持优雅关闭
+- [ ] `cmd/client/main.go` 能正确演示完整流程：生成密钥 → 加密 → 解密 → 验证一致性
+- [ ] AES-128-GCM 加解密端到端成功（明文加密后解密还原）
+- [ ] AES-192-GCM 加解密端到端成功
+- [ ] AES-256-GCM 加解密端到端成功
+- [ ] SM4-GCM 加解密端到端成功
+- [ ] CBC/CTR/CFB/OFB 模式在所有支持算法上均能正确加解密
+- [ ] GCM 模式下篡改密文返回 ErrAuthFailed（认证失败）
+- [ ] 不支持的 algorithm 返回 ErrInvalidAlgorithm
+- [ ] 不支持的 mode 返回 ErrInvalidMode
+- [ ] 密钥长度与算法不匹配返回 ErrKeyLengthMismatch
+- [ ] POST /api/v1/keys/generate 正确返回 encrypted_data_key + plaintext_data_key
+- [ ] POST /api/v1/keys/decrypt 正确返回 plaintext_data_key
+- [ ] POST /api/v1/keys/rotate 正确返回 new_encrypted_data_key + new_plaintext_data_key
+- [ ] GET /api/v1/algorithms 正确返回所有算法和模式列表
+- [ ] GET /health 正确返回服务状态和 TPM 可用性
+- [ ] 客户端配置多个 KeyServer URL 时，当前服务不可用能自动切换到下一个
+- [ ] 全部 KeyServer 不可用返回 ErrKeyServerUnavailable
+- [ ] 密钥轮换后，用新密钥加密的数据能解密；旧数据需要重新加密
+- [ ] `go build ./...` 编译无错误
+- [ ] `go test ./...` 测试通过
+- [ ] 加解密后的 CiphertextFormat JSON 序列化和反序列化一致性验证通过
+- [ ] plaintext_data_key 使用后内存清零验证（代码审查确认调用 clear/bytes.Fill）
