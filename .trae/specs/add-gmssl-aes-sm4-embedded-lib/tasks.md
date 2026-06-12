@@ -1,12 +1,12 @@
 # Tasks
 
-- [ ] Task 1: 创建Git开发分支并获取GmSSL源码
-  - [ ] SubTask 1.1: 从当前分支创建 feature/gmssl-aes-sm4-embedded 分支
-  - [ ] SubTask 1.2: 克隆GmSSL最新master分支源码（https://github.com/guanzhi/GmSSL.git）作为参考
+- [x] Task 1: 创建Git开发分支并获取GmSSL源码
+  - [x] SubTask 1.1: 从当前分支创建 feature/gmssl-aes-sm4-embedded 分支
+  - [x] SubTask 1.2: 克隆GmSSL最新master分支源码（https://github.com/guanzhi/GmSSL.git）作为参考
 
-- [ ] Task 2: 搭建项目目录结构和Makefile
-  - [ ] SubTask 2.1: 创建目录结构（include/、src/aes/、src/sm4/、test/）
-  - [ ] SubTask 2.2: 创建Makefile，配置交叉编译工具链和全部编译参数
+- [x] Task 2: 搭建项目目录结构和Makefile
+  - [x] SubTask 2.1: 创建目录结构（include/、src/aes/、src/sm4/、test/）
+  - [x] SubTask 2.2: 创建Makefile，配置交叉编译工具链和全部编译参数
     - 编译器前缀: arm-none-eabi-
     - CPU: -mcpu=cortex-a9
     - FPU: -mfpu=neon-vfpv3
@@ -16,27 +16,27 @@
     - 共同参数: -Wall -fdata-sections -ffunction-sections -Wundef -Wshadow -Wconversion -Wredundant-decls -Wunknown-pragmas -mno-unaligned-access -marm
     - 链接参数: -Wl,--gc-sections
 
-- [ ] Task 3: 适配AES算法实现
-  - [ ] SubTask 3.1: 从GmSSL最新master分支提取AES核心算法代码（aes_core.c / aes_locl.h等）
-  - [ ] SubTask 3.2: 去除OS依赖，适配裸机环境
-  - [ ] SubTask 3.3: 实现AES-ECB和AES-CBC模式的加解密接口
-  - [ ] SubTask 3.4: 创建AES公开头文件，定义AES API
+- [x] Task 3: 适配AES算法实现
+  - [x] SubTask 3.1: 从GmSSL最新master分支提取AES核心算法代码（aes_core.c / aes_locl.h等）
+  - [x] SubTask 3.2: 去除OS依赖，适配裸机环境
+  - [x] SubTask 3.3: 实现AES-ECB和AES-CBC模式的加解密接口
+  - [x] SubTask 3.4: 创建AES公开头文件，定义AES API
 
-- [ ] Task 4: 适配SM4算法实现
-  - [ ] SubTask 4.1: 从GmSSL最新master分支提取SM4核心算法代码（sm4.c / sm4.h等）
-  - [ ] SubTask 4.2: 去除OS依赖，适配裸机环境
-  - [ ] SubTask 4.3: 实现SM4-ECB和SM4-CBC模式的加解密接口
-  - [ ] SubTask 4.4: 创建SM4公开头文件，定义SM4 API
+- [x] Task 4: 适配SM4算法实现
+  - [x] SubTask 4.1: 从GmSSL最新master分支提取SM4核心算法代码（sm4.c / sm4.h等）
+  - [x] SubTask 4.2: 去除OS依赖，适配裸机环境
+  - [x] SubTask 4.3: 实现SM4-ECB和SM4-CBC模式的加解密接口
+  - [x] SubTask 4.4: 创建SM4公开头文件，定义SM4 API
 
-- [ ] Task 5: 创建统一对外头文件
-  - [ ] SubTask 5.1: 创建 crypto_lib.h，统一包含AES和SM4接口
+- [x] Task 5: 创建统一对外头文件
+  - [x] SubTask 5.1: 创建 crypto_lib.h，统一包含AES和SM4接口
 
-- [ ] Task 6: 编写测试程序
-  - [ ] SubTask 6.1: 编写AES-ECB/CBC加解密测试用例（使用标准测试向量）
-  - [ ] SubTask 6.2: 编写SM4-ECB/CBC加解密测试用例（使用国标测试向量）
+- [x] Task 6: 编写测试程序
+  - [x] SubTask 6.1: 编写AES-ECB/CBC加解密测试用例（使用标准测试向量）
+  - [x] SubTask 6.2: 编写SM4-ECB/CBC加解密测试用例（使用国标测试向量）
 
-- [ ] Task 7: 验证交叉编译
-  - [ ] SubTask 7.1: 使用指定工具链完整编译库和测试程序，确认无编译错误和警告
+- [x] Task 7: 验证交叉编译
+  - [x] SubTask 7.1: 使用指定工具链完整编译库和测试程序，确认无编译错误和警告
 
 # Task Dependencies
 - [Task 2] depends on [Task 1]
