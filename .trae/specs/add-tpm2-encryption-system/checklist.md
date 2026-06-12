@@ -1,17 +1,27 @@
 - [ ] Go 模块初始化成功，go-tpm 依赖正确引入
-- [ ] 项目目录结构清晰（cmd/、internal/tpm/、internal/crypto/、internal/api/、internal/model/）
+- [ ] 项目目录结构清晰（cmd/、internal/tpm/、internal/crypto/、internal/api/、internal/model/、internal/config/）
 - [ ] TPM 上下文初始化成功，能连接 TPM 设备或 swtpm 模拟器
 - [ ] 根密钥首次创建成功（CreatePrimary），再次启动能正确加载已有根密钥
 - [ ] 根密钥私钥部分不离开 TPM 芯片（代码中无导出私钥逻辑）
-- [ ] 数据密钥生成返回 256 位随机密钥
+- [ ] 数据密钥生成支持 AES-128/192/256 和 SM4-128 密钥长度
 - [ ] 数据密钥由根密钥在 TPM 内加密，返回密文 blob
 - [ ] 加密的数据密钥密文能通过 TPM 正确解密为明文
 - [ ] 持久化存储仅保存加密后的数据密钥密文，无明文存储
-- [ ] AES-256-GCM 加密/解密正确，密文格式包含 IV 和认证标签
+- [ ] AES GCM/CBC/CTR/CFB/OFB 五种模式加解密正确
+- [ ] SM4 GCM/CBC/CTR/CFB/OFB 五种模式加解密正确
+- [ ] 统一 Cipher 接口能根据算法+模式自动选择引擎
+- [ ] 密文格式包含 IV/Nonce、认证标签（GCM 模式）、算法标识、模式标识
+- [ ] 算法/模式校验正确：不支持的算法或模式返回错误
+- [ ] 密钥长度与算法不匹配时返回错误
 - [ ] REST API 服务正常启动，监听指定端口
-- [ ] POST /api/v1/keys/generate 返回加密数据密钥密文和明文数据密钥
-- [ ] POST /api/v1/encrypt 一站式完成数据密钥解密 + 数据加密
-- [ ] POST /api/v1/decrypt 一站式完成数据密钥解密 + 数据解密
+- [ ] POST /api/v1/keys/generate 支持指定算法，返回对应长度的数据密钥
+- [ ] POST /api/v1/encrypt 支持指定算法和模式，一站式完成加解密
+- [ ] POST /api/v1/decrypt 支持指定算法和模式，一站式完成解密
 - [ ] POST /api/v1/keys/rotate 生成新数据密钥并加密返回
+- [ ] GET /api/v1/algorithms 返回支持的算法和模式列表
+- [ ] 单机模式（standalone）正常工作：密钥服务 + 加解密在同一进程
+- [ ] 密钥服务模式（key-server）正常工作：仅提供密钥 API，连接 TPM
+- [ ] 工作节点模式（worker）正常工作：通过远程密钥服务获取密钥，本地加解密
+- [ ] 工作节点支持多密钥服务地址故障切换
 - [ ] TPM 不可用时 API 返回明确错误信息，不静默失败
 - [ ] 数据密钥密文被篡改时 TPM 解密失败，API 返回错误
