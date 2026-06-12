@@ -1,7 +1,8 @@
 # Tasks
 
-- [ ] Task 1: 创建Git开发分支
+- [ ] Task 1: 创建Git开发分支并获取GmSSL源码
   - [ ] SubTask 1.1: 从当前分支创建 feature/gmssl-aes-sm4-embedded 分支
+  - [ ] SubTask 1.2: 克隆GmSSL最新master分支源码（https://github.com/guanzhi/GmSSL.git）作为参考
 
 - [ ] Task 2: 搭建项目目录结构和Makefile
   - [ ] SubTask 2.1: 创建目录结构（include/、src/aes/、src/sm4/、test/）
@@ -16,13 +17,13 @@
     - 链接参数: -Wl,--gc-sections
 
 - [ ] Task 3: 适配AES算法实现
-  - [ ] SubTask 3.1: 从GmSSL 3.0+提取AES核心算法代码（aes_core.c / aes_locl.h等）
+  - [ ] SubTask 3.1: 从GmSSL最新master分支提取AES核心算法代码（aes_core.c / aes_locl.h等）
   - [ ] SubTask 3.2: 去除OS依赖，适配裸机环境
   - [ ] SubTask 3.3: 实现AES-ECB和AES-CBC模式的加解密接口
   - [ ] SubTask 3.4: 创建AES公开头文件，定义AES API
 
 - [ ] Task 4: 适配SM4算法实现
-  - [ ] SubTask 4.1: 从GmSSL 3.0+提取SM4核心算法代码（sm4.c / sm4.h等）
+  - [ ] SubTask 4.1: 从GmSSL最新master分支提取SM4核心算法代码（sm4.c / sm4.h等）
   - [ ] SubTask 4.2: 去除OS依赖，适配裸机环境
   - [ ] SubTask 4.3: 实现SM4-ECB和SM4-CBC模式的加解密接口
   - [ ] SubTask 4.4: 创建SM4公开头文件，定义SM4 API

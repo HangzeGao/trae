@@ -1,10 +1,10 @@
 # 基于GmSSL3.0的AES/SM4嵌入式加解密库 Spec
 
 ## Why
-需要在SOC2018 + Cortex-A9嵌入式平台上提供AES和SM4对称加解密能力，基于GmSSL 3.0+的实现进行裁剪适配，生成可独立编译的轻量级嵌入式加密库。
+需要在SOC2018 + Cortex-A9嵌入式平台上提供AES和SM4对称加解密能力，基于GmSSL最新master分支源码进行裁剪适配，生成可独立编译的轻量级嵌入式加密库。
 
 ## What Changes
-- 从GmSSL 3.0+源码中提取AES和SM4核心算法实现，去除对操作系统API（stdio、stdlib文件IO等）的依赖
+- 从GmSSL最新master分支（https://github.com/guanzhi/GmSSL.git）提取AES和SM4核心算法实现，去除对操作系统API（stdio、stdlib文件IO等）的依赖
 - 适配嵌入式裸机环境，确保所有代码可在无OS环境下运行
 - 创建适配SOC2018/Cortex-A9的交叉编译Makefile，包含指定的编译器、CPU类型、FPU、预定义宏和编译参数
 - 提供统一的加解密API接口（AES-ECB/CBC、SM4-ECB/CBC）
@@ -12,7 +12,7 @@
 
 ## Impact
 - Affected code: 新增嵌入式加密库全部代码
-- 依赖: GmSSL 3.0+ 源码（仅提取，不引入完整GmSSL构建系统）
+- 依赖: GmSSL最新master分支源码（https://github.com/guanzhi/GmSSL.git，仅提取，不引入完整GmSSL构建系统）
 
 ## ADDED Requirements
 
