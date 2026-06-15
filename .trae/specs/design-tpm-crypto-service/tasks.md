@@ -54,6 +54,11 @@
   - [ ] SubTask 4.3.2: 通过容器化集成测试(docker-compose 起 etcd)验证
 
 ## 阶段 5 — 算法与分组模式层
+- [ ] Task 5.0: 引入 CPU 特性检测(`internal/cpufeat`)与算法后端路由
+  - [ ] SubTask 5.0.1: 使用 `golang.org/x/sys/cpu` + `github.com/klauspost/cpuid` 实现 `Detect()` → `Features{AESNI, GFNI, AVX2, AVX512F, SSE41}`
+  - [ ] SubTask 5.0.2: 启动时把结果写入 zap 与 Prometheus 指标 `crypto_cpu_features_info{feature=...}`
+  - [ ] SubTask 5.0.3: 定义 `crypto.backend` 配置(`auto|std|circl|openssl`)与工厂方法,按配置/特性返回具体 `Cipher` 实现
+  - [ ] SubTask 5.0.4: 编写 `crypto.backend=std` 单元测试,断言 `crypto/aes` 与 `gmsm/sm4` 始终可用
 - [ ] Task 5.1: 抽象 `internal/crypto` 注册表
   - [ ] SubTask 5.1.1: `Cipher` 接口 `Encrypt(plain, iv, aad) (cipher, tag, error)` / `Decrypt(...)`
   - [ ] SubTask 5.1.2: 按 `(Algorithm, BlockMode)` 路由到实现;不支持组合返回 `codes.InvalidArgument`
@@ -66,6 +71,16 @@
 - [ ] Task 5.4: HMAC-SHA256 完整性绑定(CBC 模式)
   - [ ] SubTask 5.4.1: 派生子密钥 `K_enc||K_mac`,通过 HKDF 派生
   - [ ] SubTask 5.4.2: 加密时先密文后 MAC,解密时先校验 MAC 再解密(`subtle.ConstantTimeCompare`)
+- [ ] Task 5.5: 性能基线与基准测试
+  - [ ] SubTask 5.5.1: 为每个 `(algo, mode)` 在 `internal/crypto` 下编写 `Benchmark*`,覆盖 1B / 1KB / 64KB 三种负载
+  - [ ] SubTask 5.5.2: 在 CI 跑 `go test -bench=. -benchmem -benchtime=3s` 产出 `bench/results/<date>-<commit>.txt`
+  - [ ] SubTask 5.5.3: 引入 `golang.org/x/perf/cmd/benchstat`,对比 `bench/baseline.txt`,退化 >5% 标红
+  - [ ] SubTask 5.5.4: 在 `Makefile` 添加 `bench-baseline` 目标(锁定环境变量 `GOMAXPROCS=1`,重跑并覆盖 baseline)
+- [ ] Task 5.6: 加速后端实现(可选,基线不达标时启用)
+  - [ ] SubTask 5.6.1: `crypto.backend=circl` — 引入 `github.com/cloudflare/circl`,实现 `CirclCipher` 适配器,优先覆盖 AES-GCM / SM4-GCM
+  - [ ] SubTask 5.6.2: `crypto.backend=openssl` — 通过 CGO 调用 `EVP_aes_*_gcm` / `EVP_sm4_gcm`,文件置于 `internal/crypto/openssl/`
+  - [ ] SubTask 5.6.3: 构建标签 `cgo_openssl`,未启用时不参与编译
+  - [ ] SubTask 5.6.4: 在 spec 性能基线下跑通三套后端并落 baseline,允许运维按场景指定
 
 ## 阶段 6 — 业务用例层
 - [ ] Task 6.1: `internal/service/crypto.go`
@@ -114,8 +129,11 @@
 - [Task 3.1, 3.2] 依赖 [Task 1.1, 2.1] (TPM 错误码需要与 proto 一致)
 - [Task 4.1] 依赖 [Task 1.1]
 - [Task 4.2, 4.3] 依赖 [Task 4.1]
-- [Task 5.1] 依赖 [Task 1.1]
+- [Task 5.0] 依赖 [Task 1.1, 1.3]
+- [Task 5.1] 依赖 [Task 5.0]
 - [Task 5.2, 5.3, 5.4] 依赖 [Task 5.1]
+- [Task 5.5] 依赖 [Task 5.2, 5.3, 5.4](基线对照需要先有算子)
+- [Task 5.6] 依赖 [Task 5.5](仅在基线不达标时进入)
 - [Task 6.1] 依赖 [Task 3.2, 4.x, 5.x]
 - [Task 7.1, 7.2] 依赖 [Task 6.1, 2.2]
 - [Task 8.x] 依赖 [Task 7.x]

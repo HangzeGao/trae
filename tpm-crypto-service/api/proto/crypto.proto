@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package tpmcrypto.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/tpm-crypto/tpm-crypto-service/api/gen/go;tpmcryptov1";
+
+// =================== Enums ===================
+
+enum Algorithm {
+  ALGORITHM_UNSPECIFIED = 0;
+  ALGORITHM_AES         = 1;
+  ALGORITHM_SM4         = 2;
+}
+
+enum BlockMode {
+  BLOCK_MODE_UNSPECIFIED = 0;
+  BLOCK_MODE_ECB         = 1;
+  BLOCK_MODE_CBC         = 2;
+  BLOCK_MODE_CTR         = 3;
+  BLOCK_MODE_CFB         = 4;
+  BLOCK_MODE_OFB         = 5;
+  BLOCK_MODE_GCM         = 6;
+}
+
+enum KeyStatus {
+  KEY_STATUS_UNSPECIFIED = 0;
+  KEY_STATUS_ACTIVE      = 1;
+  KEY_STATUS_RETIRED     = 2;
+  KEY_STATUS_REVOKED     = 3;
+}
+
+// =================== Messages ===================
+
+message DataKeyMeta {
+  string key_id                       = 1;
+  Algorithm algorithm                 = 2;
+  uint32 key_length_bits              = 3;
+  uint64 version                      = 4;
+  KeyStatus status                    = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message CreateDataKeyRequest {
+  string key_id          = 1;
+  Algorithm algorithm    = 2;
+  uint32 key_length_bits = 3;
+}
+
+message DescribeDataKeyRequest {
+  string key_id    = 1;
+  uint64 version   = 2; // 0 表示 latest active
+}
+
+message RotateDataKeyRequest {
+  string key_id = 1;
+}
+
+message RevokeDataKeyRequest {
+  string key_id = 1;
+  uint64 version = 2; // 0 表示所有版本
+}
+
+message RevokeDataKeyResponse {
+  uint32 revoked_versions = 1;
+}
+
+message EncryptRequest {
+  bytes plaintext = 1;
+  string key_id   = 2;
+  Algorithm algorithm = 3;
+  BlockMode mode     = 4;
+  bytes aad          = 5;
+  uint64 key_version = 6; // 0 表示 latest active
+}
+
+message EncryptResponse {
+  bytes ciphertext = 1;
+  bytes iv         = 2; // GCM 模式下是 nonce
+  bytes tag        = 3; // AEAD tag / CBC+HMAC MAC
+  uint64 key_version = 4;
+}
+
+message DecryptRequest {
+  bytes ciphertext = 1;
+  bytes iv         = 2;
+  bytes tag        = 3;
+  string key_id    = 4;
+  uint64 key_version = 5;
+  Algorithm algorithm = 6;
+  BlockMode mode     = 7;
+  bytes aad          = 8;
+}
+
+message DecryptResponse {
+  bytes plaintext = 1;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum Status {
+    SERVING_UNKNOWN = 0;
+    SERVING         = 1;
+    NOT_SERVING     = 2;
+  }
+  Status status = 1;
+  string message = 2;
+  map<string, bool> components = 3;
+}
+
+// =================== Service ===================
+
+service CryptoService {
+  rpc CreateDataKey(CreateDataKeyRequest) returns (DataKeyMeta) {
+    option (google.api.http) = {
+      post: "/v1/keys"
+      body: "*"
+    };
+  }
+  rpc DescribeDataKey(DescribeDataKeyRequest) returns (DataKeyMeta) {
+    option (google.api.http) = {
+      get: "/v1/keys/{key_id}"
+    };
+  }
+  rpc RotateDataKey(RotateDataKeyRequest) returns (DataKeyMeta) {
+    option (google.api.http) = {
+      post: "/v1/keys/{key_id}/rotate"
+      body: "*"
+    };
+  }
+  rpc RevokeDataKey(RevokeDataKeyRequest) returns (RevokeDataKeyResponse) {
+    option (google.api.http) = {
+      post: "/v1/keys/{key_id}/revoke"
+      body: "*"
+    };
+  }
+  rpc Encrypt(EncryptRequest) returns (EncryptResponse) {
+    option (google.api.http) = {
+      post: "/v1/encrypt"
+      body: "*"
+    };
+  }
+  rpc Decrypt(DecryptRequest) returns (DecryptResponse) {
+    option (google.api.http) = {
+      post: "/v1/decrypt"
+      body: "*"
+    };
+  }
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse) {
+    option (google.api.http) = {
+      get: "/healthz"
+    };
+  }
+}

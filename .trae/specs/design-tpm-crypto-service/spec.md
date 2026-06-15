@@ -11,6 +11,7 @@
 - 支持 AES-128/192/256 与 SM4-128 分组密码
 - 支持 ECB / CBC / CTR / CFB / OFB / GCM 等主流安全分组模式(GCM 默认推荐)
 - 支持隔离部署(单机单实例)与多机集群部署(无状态服务 + 共享外部密钥库)
+- 建立性能测试基线,内置 CPU 特性(AES-NI / GFNI / AVX2 / AVX-512)检测,基线未达成时自动/可选切换到带 SIMD 加速的算法实现
 - 新建 `feature/tpm-crypto-service` 分支作为开发基线
 
 ## Impact
@@ -34,8 +35,10 @@
 | --- | --- | --- |
 | 服务框架 | `grpc-go` + `grpc-gateway` | Google 官方维护,业界最经典权威;同一份 Protobuf 同时暴露 gRPC 与 HTTP/JSON,降低双协议维护成本 |
 | TPM 2.0 客户端 | `github.com/google/go-tpm` | Google 官方维护,支持 TPM 2.0 全部命令集;同源项目 `go-tpm-tools` 提供高级封装 |
-| 国密库 | `github.com/tjfoc/gmsm` | 商用密码检测认证的开源实现,工业界部署最广 |
-| AES | `crypto/aes` (Go 标准库) | FIPS-197 官方实现,经过 Go 团队与社区长期审计 |
+| 国密库 | `github.com/tjfoc/gmsm` | 商用密码检测认证的开源实现,工业界部署最广;x86-64 构建自动启用 GFNI/AVX 加速路径 |
+| AES | `crypto/aes` (Go 标准库) | FIPS-197 官方实现,amd64 构建自动使用 AES-NI 汇编路径;无需三方依赖 |
+| 加速回退 | `github.com/intel-go/cpuid` + `github.com/klauspost/cpuid` + `golang.org/x/sys/cpu` | CPU 特性运行时检测;若基线未达标可选用 `github.com/cloudflare/circl`、`github.com/zeebo/blake3-bench` 等含 SIMD 加速的替代实现,或通过 CGO 调用 `openssl` / `intel-ipsec-mb` |
+| 性能基准 | Go 内置 `testing.B` + `github.com/bojand/ghz`(gRPC 压测) | 与 CI 集成,产物落 `bench/` 目录 |
 | 日志 | `go.uber.org/zap` | 高性能结构化日志,生产首选 |
 | 配置 | `spf13/viper` | 支持文件/环境变量/etcd 多源,与 `pflag` 集成 |
 | Metrics | `prometheus/client_golang` | 云原生事实标准 |
@@ -244,6 +247,55 @@
 - **WHEN** 业务层返回 `codes.Internal`
 - **THEN** HTTP 响应状态码为 500,且 body 仅包含脱敏后的 `message`
 
+### Requirement: 性能基线与硬件加速
+系统 SHALL 提供可重复运行的性能基准,并在初始化时自动检测 CPU 指令集以选择最优实现路径;若基线未达成,允许通过配置/编译标签切换到带 SIMD 加速的算法实现。
+
+#### Scenario: CPU 特性自检
+- **WHEN** 服务启动
+- **THEN** 调用 `internal/cpufeat.Detect()` 输出 `aesni / gfni / avx2 / avx512f / sse4.1` 等布尔值
+- **AND** 将结果写入 zap 启动日志字段 `cpu_features`
+- **AND** Prometheus 指标 `crypto_cpu_features_info` 暴露 1/0 值
+
+#### Scenario: 算子基准测试通过基线
+- **WHEN** 在 v1 目标机型(参考:Intel Xeon Gold 6248 @ 2.5GHz, 单核)运行 `go test -bench=. -benchmem ./internal/crypto/...`
+- **THEN** 必须满足以下基线(以 `ns/op` 与 `MB/s` 双指标记录):
+  - AES-128-GCM @ 1KB  ≤ 800 ns/op(≥ 1.2 GB/s)
+  - AES-256-GCM @ 1KB  ≤ 1.0 µs/op(≥ 1.0 GB/s)
+  - AES-128-GCM @ 64KB ≤ 25 µs/op(≥ 2.5 GB/s)
+  - SM4-GCM @ 1KB       ≤ 2.0 µs/op(≥ 0.5 GB/s)
+  - SM4-GCM @ 64KB      ≤ 80 µs/op(≥ 0.8 GB/s)
+- **AND** 基准产物保存到 `bench/results/<date>-<commit>.txt`,由 CI 归档
+- **AND** 任一指标低于基线 90% 时 CI 标红并阻止合并
+
+#### Scenario: 端到端 QPS / 延迟基线
+- **WHEN** 使用 `ghz` 对 :9090 进行压测(并发 64, 持续 60s, 1KB AES-GCM Encrypt)
+- **THEN** 必须满足:
+  - 单副本 QPS ≥ 5,000
+  - p50 延迟 ≤ 5 ms
+  - p99 延迟 ≤ 20 ms
+- **AND** 集群部署下(N 副本,叠加 etcd/网络)QPS ≥ 5,000 × 0.8N
+
+#### Scenario: 基线未达成时启用加速后端
+- **WHEN** `internal/cpufeat` 检测到 `aesni=false` 或 `gfni=false` 且基准低于基线
+- **THEN** 当 `crypto.backend=auto` 时,自动回退到带 SIMD 加速的实现(优先级):
+  1. `crypto/aes` + `golang.org/x/sys/cpu` 内联汇编回退
+  2. `github.com/cloudflare/circl`(提供 SM4-GCM 加速实现,如版本支持)
+  3. CGO 调用 `openssl` libcrypto 的 `EVP_aes_*_gcm` / `EVP_sm4_gcm`(需构建标签 `cgo_openssl`)
+- **AND** `crypto.backend=openssl` / `circl` / `std` 可由运维强制指定,跳过自动选择
+- **AND** 切换后必须复用同一 `Cipher` 接口,业务层无改动
+
+#### Scenario: 构建标签隔离加速代码
+- **WHEN** 使用 `go build -tags=cgo_openssl` 编译
+- **THEN** 自动链接系统 OpenSSL(>= 1.1.1,支持 SM4 GCM 需 >= 3.0)
+- **AND** 未启用该标签时,CGO 加速代码不参与编译,避免 CI 链路污染
+- **AND** `go vet` / `staticcheck` 在两种编译条件下均通过
+
+#### Scenario: 基准回归追踪
+- **WHEN** 每次 PR 提交
+- **THEN** CI 跑 `benchstat` 比对 `bench/baseline.txt` 与本次结果
+- **AND** 若任意算法 `ns/op` 退化 >5%,PR 需人工确认后才能合入
+- **AND** 合并到 main 后,新基线作为下一次的 `bench/baseline.txt`
+
 ## MODIFIED Requirements
 无(本项目为全新模块,无既有规范被修改)。
 
@@ -323,4 +375,31 @@ log:
   level: "info"
   encoding: "json"
   output: "stdout"
+
+crypto:
+  backend: "auto"            # auto | std | circl | openssl
+  # 仅当 backend=openssl 生效
+  openssl:
+    lib_path: "/usr/lib/x86_64-linux-gnu/libcrypto.so"
+    min_version: "3.0.0"
+  # 性能基线比对
+  benchmark:
+    enforce_baseline: true
+    regression_threshold_pct: 5
+    baseline_file: "bench/baseline.txt"
 ```
+
+## 附录 D — 性能基线表(参考机型:Intel Xeon Gold 6248 @ 2.5GHz, 单核,Go 1.22,linux/amd64)
+
+| 算子 | 负载 | ns/op 上限 | MB/s 下限 |
+| --- | --- | --- | --- |
+| AES-128-GCM | 1KB  | 800     | 1,200  |
+| AES-256-GCM | 1KB  | 1,000   | 1,000  |
+| AES-128-GCM | 64KB | 25,000  | 2,500  |
+| AES-256-GCM | 64KB | 30,000  | 2,100  |
+| AES-128-CBC + HMAC | 1KB  | 1,200 | 800  |
+| SM4-GCM  | 1KB  | 2,000   | 500  |
+| SM4-GCM  | 64KB | 80,000  | 800  |
+| SM4-CBC + HMAC | 1KB | 3,000 | 320  |
+
+> 在不同硬件上需重新跑一遍 `make bench-baseline` 生成新基线,作为 `bench/baseline.txt` 提交。

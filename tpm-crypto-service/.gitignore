@@ -1,0 +1,39 @@
+# Binaries
+bin/
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+*.coverprofile
+coverage.txt
+coverage.html
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Local config & data
+config.local.yaml
+data/
+*.bolt
+*.db
+
+# Bench
+bench/results/
+
+# Secrets
+*.pem
+*.key
+*.crt

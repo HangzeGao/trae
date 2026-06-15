@@ -42,6 +42,13 @@
 - [ ] ECB 模式拒绝 >1 块数据并返回 `INVALID_ARGUMENT`
 - [ ] SM4-192 等不支持的组合返回 `INVALID_ARGUMENT` 并说明原因
 - [ ] 所有 IV/nonce 由 `crypto/rand` 生成,未使用 `math/rand`
+- [ ] CPU 特性自检输出 `aesni/gfni/avx2/avx512f/sse4.1` 字段,且 `crypto_cpu_features_info` 指标已暴露
+- [ ] 算子基准 `go test -bench=. -benchmem` 全量通过且在 spec 附录 D 表格的 `ns/op` 与 `MB/s` 上下限内
+- [ ] `bench/baseline.txt` 存在并随 PR 一起被 `benchstat` 比对,退化 >5% 标红
+- [ ] 端到端压测(QPS / p50 / p99)达成基线(单副本 QPS ≥ 5,000,p50 ≤ 5 ms,p99 ≤ 20 ms,1KB AES-GCM)
+- [ ] `crypto.backend=auto` 模式下,CPU 缺失 AES-NI/GFNI 时可自动回退到 circl 或 openssl
+- [ ] `crypto.backend=openssl` 构建需 `-tags=cgo_openssl`,并在目标环境链接到 OpenSSL ≥ 1.1.1(SM4-GCM 需 ≥ 3.0)
+- [ ] 三套后端(std / circl / openssl)对外暴露同一 `Cipher` 接口,业务层无改动
 
 ## 6. 业务用例
 - [ ] `CreateDataKey` 后,`DescribeDataKey` 返回元数据但不返回明文
@@ -77,3 +84,15 @@
 - [ ] `grpcurl` + `curl` 同时跑通 7 个 RPC,响应一致
 - [ ] 故障注入: kill 服务后重启,ARK 自动恢复,既有 DEK 可继续解密历史数据
 - [ ] 单元测试覆盖率 ≥ 70%
+
+## 11. 性能基线与加速
+- [ ] 启动日志中包含 `cpu_features={aesni:...,gfni:...,avx2:...,avx512f:...,sse4.1:...}`
+- [ ] `/metrics` 端点中 `crypto_cpu_features_info{feature=...}` 系列 5 项均存在
+- [ ] spec 附录 D 中所有算子在 CI 环境下达到 `ns/op` 与 `MB/s` 上下限(允许 ±10% 容差)
+- [ ] 端到端 QPS / p50 / p99 基线达成(单副本 QPS ≥ 5,000,p50 ≤ 5 ms,p99 ≤ 20 ms)
+- [ ] 集群(N=3)叠加 etcd 端到端 QPS ≥ 5,000 × 0.8N
+- [ ] `bench/baseline.txt` 提交在仓库,`make bench` 自动产出 `bench/results/<date>-<commit>.txt` 并对比 baseline
+- [ ] `benchstat` 在 PR 中未报「退化 >5%」的算子
+- [ ] 关闭 AES-NI 模拟场景(`GOEXPERIMENT=cgocheck2` 或 QEMU 模拟)下 `crypto.backend=auto` 成功回退到 circl/openssl
+- [ ] `go build -tags=cgo_openssl` 在 OpenSSL ≥ 3.0 环境中可链接成功,SM4-GCM 走 EVP 路径
+- [ ] 三套后端 std/circl/openssl 在同一负载下的 `MB/s` 差距记录在 `bench/results/`,并被 release notes 引用

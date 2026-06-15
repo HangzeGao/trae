@@ -1,0 +1,20 @@
+goos: linux
+goarch: amd64
+pkg: github.com/tpm-crypto/tpm-crypto-service/internal/crypto/aes
+cpu: Intel(R) Xeon(R) Platinum 8457C
+BenchmarkAES128_GCM_1KB-2        	  598226	      1708 ns/op	 599.48 MB/s	    5888 B/op	       7 allocs/op
+BenchmarkAES256_GCM_1KB-2        	  655501	      1817 ns/op	 563.60 MB/s	    5888 B/op	       7 allocs/op
+BenchmarkAES128_GCM_64KB-2       	   25434	     48302 ns/op	1356.80 MB/s	  215552 B/op	       7 allocs/op
+BenchmarkAES128_CBC_HMAC_1KB-2   	  154882	      7493 ns/op	 136.66 MB/s	   10464 B/op	      43 allocs/op
+BenchmarkAES128_CTR_64KB-2       	   39170	     30590 ns/op	2142.38 MB/s	  133120 B/op	       6 allocs/op
+PASS
+ok  	github.com/tpm-crypto/tpm-crypto-service/internal/crypto/aes	6.722s
+goos: linux
+goarch: amd64
+pkg: github.com/tpm-crypto/tpm-crypto-service/internal/crypto/sm4
+cpu: Intel(R) Xeon(R) Platinum 8457C
+BenchmarkSM4_GCM_1KB-2        	    1267	    873937 ns/op	   1.17 MB/s	  299840 B/op	   18144 allocs/op
+BenchmarkSM4_GCM_64KB-2       	      21	  53786505 ns/op	   1.22 MB/s	17875005 B/op	 1081310 allocs/op
+BenchmarkSM4_CBC_HMAC_1KB-2   	   38776	     30984 ns/op	  33.05 MB/s	    9152 B/op	      55 allocs/op
+PASS
+ok  	github.com/tpm-crypto/tpm-crypto-service/internal/crypto/sm4	3.907s
