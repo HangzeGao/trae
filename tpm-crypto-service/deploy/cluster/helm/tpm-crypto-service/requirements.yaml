@@ -1,0 +1,9 @@
+# tpm-crypto-service 单元测试覆盖的最小 Go 版本要求
+go >= 1.22
+
+# Etcd 子 chart(可选,本地用)
+dependencies:
+  - name: etcd
+    version: "0.10.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: etcd.enabled

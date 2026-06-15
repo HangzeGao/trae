@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tpm-crypto-service-config
+  namespace: tpm-crypto
+data:
+  config.yaml: |
+    server:
+      grpc_addr: ":9090"
+      http_addr: ":8080"
+      shutdown_timeout: 30s
+    tpm:
+      device_path: "/dev/tpm0"
+      simulator: true
+      sealed_ark_path: "/var/lib/tpm-crypto/sealed-ark.blob"
+    keystore:
+      backend: etcd
+      endpoints:
+        - "etcd.tpm-crypto.svc.cluster.local:2379"
+      prefix: "/tpm-crypto/dek/"
+    deploy:
+      mode: cluster
+    log:
+      level: info
+      encoding: json
+    crypto:
+      backend: auto

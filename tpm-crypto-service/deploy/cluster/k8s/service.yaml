@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tpm-crypto-service
+  namespace: tpm-crypto
+  labels:
+    app.kubernetes.io/name: tpm-crypto-service
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 9090
+      targetPort: grpc
+      appProtocol: grpc
+    - name: http
+      port: 8080
+      targetPort: http
+      appProtocol: http
+  selector:
+    app.kubernetes.io/name: tpm-crypto-service

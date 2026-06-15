@@ -1,0 +1,27 @@
+# docker-compose 中 service 使用的配置
+server:
+  grpc_addr: ":9090"
+  http_addr: ":8080"
+  shutdown_timeout: 30s
+
+tpm:
+  device_path: "/dev/tpm0"
+  simulator: true
+  sealed_ark_path: "/var/lib/tpm-crypto/sealed-ark.blob"
+
+keystore:
+  backend: etcd
+  endpoints:
+    - "etcd:2379"
+  prefix: "/tpm-crypto/dek/"
+
+deploy:
+  mode: cluster
+
+log:
+  level: info
+  encoding: json
+  output: stdout
+
+crypto:
+  backend: auto

@@ -1,0 +1,93 @@
+# Default values for tpm-crypto-service.
+# This is a YAML-formatted file.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/tpm-crypto/tpm-crypto-service
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  grpcPort: 9090
+  httpPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: crypto.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+# 应用配置
+config:
+  server:
+    grpc_addr: ":9090"
+    http_addr: ":8080"
+    shutdown_timeout: 30s
+  tpm:
+    device_path: "/dev/tpm0"
+    simulator: true
+    pcr_selection: [0, 1, 2, 3, 4, 5, 6, 7]
+    sealed_ark_path: "/var/lib/tpm-crypto/sealed-ark.blob"
+  keystore:
+    backend: etcd
+    path: ""
+    endpoints:
+      - "etcd:2379"
+    prefix: "/tpm-crypto/dek/"
+  deploy:
+    mode: cluster
+  log:
+    level: info
+    encoding: json
+    output: stdout
+  crypto:
+    backend: auto
+
+# 启动 etcd 子 chart
+etcd:
+  enabled: true
+  replicaCount: 3

@@ -302,9 +302,10 @@ func (s *Service) loadDEK(ctx context.Context, keyID string, version uint64, alg
 	return pt, w.Version, nil
 }
 
-// wrapDEKWithID 使用 ARK 作为 KEK,采用 GCM 模式;非密钥业务(AAD=keyID)防篡改。
+// wrapDEKWithID 使用 ARK 作为 KEK,采用 AES-256-GCM 模式;非密钥业务(AAD=keyID)防篡改。
+// 注意:ARK 自身始终是 32 字节(AES-256),所以 wrap 算法固定为 AES-GCM,不受 DEK 算法影响。
 func (s *Service) wrapDEKWithID(keyID string, alg common.Algorithm, keyLenBits uint32, rawKey []byte) (*keystore.WrappedDEK, error) {
-	c, _, err := s.Factory(alg, common.GCM, 32) // ARK = 32B
+	c, _, err := s.Factory(common.AES, common.GCM, 32) // ARK = 32B,AES-256
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +329,7 @@ func (s *Service) unwrapDEK(keyID string, w *keystore.WrappedDEK) ([]byte, error
 	if len(w.WrappedKey) < 28 { // 至少 12B iv + 16B tag
 		return nil, fmt.Errorf("%w: wrapped key too short", common.ErrInvalidArgument)
 	}
-	c, _, err := s.Factory(w.Algorithm, common.GCM, 32)
+	c, _, err := s.Factory(common.AES, common.GCM, 32) // wrap 始终是 AES-256-GCM
 	if err != nil {
 		return nil, err
 	}

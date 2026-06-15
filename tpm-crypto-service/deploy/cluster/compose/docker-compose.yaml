@@ -1,0 +1,52 @@
+# 本地端到端 compose:etcd + tpm-crypto-service(simulator 模式)
+version: "3.8"
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.13
+    container_name: tpm-crypto-etcd
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd-node
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd-node=http://etcd:2380
+      - --initial-cluster-token=etcd-cluster
+      - --initial-cluster-state=new
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  tpm-crypto:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: tpm-crypto-service:dev
+    container_name: tpm-crypto-service
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command:
+      - --config=/etc/tpm-crypto/config.yaml
+    volumes:
+      - ./service-config.yaml:/etc/tpm-crypto/config.yaml:ro
+    ports:
+      - "9090:9090"
+      - "8080:8080"
+    environment:
+      - TCS_TPM_SIMULATOR=true
+      - TCS_KEYSTORE_BACKEND=etcd
+      - TCS_KEYSTORE_ENDPOINTS=etcd:2379
+      - TCS_DEPLOY_MODE=cluster
+      - TCS_LOG_LEVEL=info
+
+networks:
+  default:
+    name: tpm-crypto-net

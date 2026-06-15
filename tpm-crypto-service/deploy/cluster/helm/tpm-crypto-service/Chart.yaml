@@ -1,0 +1,16 @@
+apiVersion: v2
+name: tpm-crypto-service
+description: TPM 2.0 hardware-software combined encryption/decryption service
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - tpm
+  - cryptography
+  - encryption
+  - grpc
+  - http
+home: https://github.com/tpm-crypto/tpm-crypto-service
+maintainers:
+  - name: tpm-crypto
+    email: tpm-crypto@example.com

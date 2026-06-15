@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tpm-crypto
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tpm-crypto
+  namespace: tpm-crypto

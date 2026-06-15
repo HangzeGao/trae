@@ -1,0 +1,7 @@
+# ClusterRole/Role for tpm-crypto
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tpm-crypto
+  namespace: tpm-crypto
+rules: []  # 当前不需要 K8s API 权限;若集成 service account token,可在此加 secrets/get

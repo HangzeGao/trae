@@ -1,0 +1,31 @@
+# 隔离部署配置:单实例 + Bolt + TPM simulator
+# 该配置适用于无 TPM 硬件或测试环境。
+
+server:
+  grpc_addr: ":9090"
+  http_addr: ":8080"
+  shutdown_timeout: 30s
+  tls:
+    enabled: false
+
+tpm:
+  device_path: "/dev/tpm0"
+  simulator: true
+  pcr_selection: [0, 1, 2, 3, 4, 5, 6, 7]
+  sealed_ark_path: "/var/lib/tpm-crypto/sealed-ark.blob"
+
+keystore:
+  backend: bolt
+  path: "/var/lib/tpm-crypto/data.bolt"
+  prefix: "/tpm-crypto/dek/"
+
+deploy:
+  mode: isolated
+
+log:
+  level: info
+  encoding: json
+  output: stdout
+
+crypto:
+  backend: auto

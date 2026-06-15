@@ -5,7 +5,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Metrics 聚合所有 Prometheus 指标,集中注册到 default registry。
+// PrometheusRegistry 集中保存 default Prometheus registry,
+// 供 NewMetrics 注册和 MetricsHandler 暴露使用。
+var PrometheusRegistry = prometheus.NewRegistry()
+
+// Metrics 聚合所有 Prometheus 指标,集中注册到 PrometheusRegistry。
 type Metrics struct {
 	OpDuration      *prometheus.HistogramVec
 	RateLimited     prometheus.Counter
@@ -16,7 +20,12 @@ type Metrics struct {
 }
 
 // NewMetrics 注册并返回指标集合;幂等。
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+func NewMetrics() *Metrics {
+	return NewMetricsWith(PrometheusRegistry)
+}
+
+// NewMetricsWith 允许调用方传入自定义 registry(测试隔离用)。
+func NewMetricsWith(reg prometheus.Registerer) *Metrics {
 	factory := promauto.With(reg)
 	return &Metrics{
 		OpDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
@@ -46,4 +55,24 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help: "当前算法后端(恒为 1,label 标识)。",
 		}, []string{"backend"}),
 	}
+}
+
+// SetBackend 把当前选定的算法后端写入 BackendInfo 指标(label=1)。
+func (m *Metrics) SetBackend(backend string) {
+	if m == nil {
+		return
+	}
+	m.BackendInfo.WithLabelValues(backend).Set(1)
+}
+
+// SetCPUFeature 把 CPU 特性信息写入 CPUFeatures 指标(1=支持)。
+func (m *Metrics) SetCPUFeature(name string, ok bool) {
+	if m == nil {
+		return
+	}
+	v := 0.0
+	if ok {
+		v = 1.0
+	}
+	m.CPUFeatures.WithLabelValues(name).Set(v)
 }

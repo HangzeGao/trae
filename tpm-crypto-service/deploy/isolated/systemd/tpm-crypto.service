@@ -1,0 +1,25 @@
+[Unit]
+Description=TPM 2.0 Crypto Service (isolated deployment)
+Documentation=https://github.com/tpm-crypto/tpm-crypto-service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tpm-crypto
+Group=tpm-crypto
+ExecStart=/usr/local/bin/tpm-crypto-service --config /etc/tpm-crypto/config.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tpm-crypto
+# 读 TPM 设备
+SupplementaryGroups=tss
+
+[Install]
+WantedBy=multi-user.target

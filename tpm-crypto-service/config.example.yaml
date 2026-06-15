@@ -1,0 +1,46 @@
+# tpm-crypto-service 默认配置示例
+# 优先级:CLI flag > env (TCS_*) > 配置文件 > 默认值
+
+server:
+  grpc_addr: ":9090"
+  http_addr: ":8080"
+  shutdown_timeout: 30s
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    ca_file: ""
+
+tpm:
+  device_path: "/dev/tpm0"
+  simulator: true              # 隔离部署下,使用软件模拟器
+  pcr_selection: [0, 1, 2, 3, 4, 5, 6, 7]
+  sealed_ark_path: "/var/lib/tpm-crypto/sealed-ark.blob"
+
+keystore:
+  backend: bolt                 # bolt | etcd | memory
+  path: "/var/lib/tpm-crypto/data.bolt"
+  endpoints: []
+  prefix: "/tpm-crypto/dek/"
+
+deploy:
+  mode: isolated               # isolated | cluster
+
+rate_limit:
+  qps: 1000
+  burst: 2000
+
+log:
+  level: info                   # debug | info | warn | error
+  encoding: json                # json | console
+  output: stdout                # stdout | stderr | file path
+
+crypto:
+  backend: auto                # auto | std | circl | openssl
+  openssl:
+    lib_path: "/usr/lib/x86_64-linux-gnu/libcrypto.so"
+    min_version: "3.0.0"
+  benchmark:
+    enforce_baseline: true
+    regression_threshold_pct: 5.0
+    baseline_file: "bench/baseline.txt"

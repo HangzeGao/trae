@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tpm-crypto-service
+  namespace: tpm-crypto
+  labels:
+    app.kubernetes.io/name: tpm-crypto-service
+    app.kubernetes.io/component: crypto
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tpm-crypto-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tpm-crypto-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: tpm-crypto
+      containers:
+        - name: server
+          image: ghcr.io/tpm-crypto/tpm-crypto-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/etc/tpm-crypto/config.yaml
+          ports:
+            - name: grpc
+              containerPort: 9090
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TCS_TPM_SIMULATOR
+              value: "true"
+            - name: TCS_KEYSTORE_BACKEND
+              value: "etcd"
+            - name: TCS_KEYSTORE_ENDPOINTS
+              value: "etcd.tpm-crypto.svc.cluster.local:2379"
+            - name: TCS_DEPLOY_MODE
+              value: "cluster"
+            - name: TCS_LOG_LEVEL
+              value: info
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tpm-crypto
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/tpm-crypto
+      volumes:
+        - name: config
+          configMap:
+            name: tpm-crypto-service-config
+        - name: data
+          emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532

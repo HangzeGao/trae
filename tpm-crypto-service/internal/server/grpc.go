@@ -10,6 +10,7 @@ import (
 
 	tpmcrypto "github.com/tpm-crypto/tpm-crypto-service/api/gen/go"
 	"github.com/tpm-crypto/tpm-crypto-service/internal/crypto/common"
+	"github.com/tpm-crypto/tpm-crypto-service/internal/keystore"
 	"github.com/tpm-crypto/tpm-crypto-service/internal/service"
 )
 
@@ -151,7 +152,7 @@ func mapStatus(s common.KeyStatus) tpmcrypto.KeyStatus {
 	return tpmcrypto.KeyStatus_KEY_STATUS_UNSPECIFIED
 }
 
-func toProto(m *service.DataKeyMeta) *tpmcrypto.DataKeyMeta {
+func toProto(m *keystore.DataKeyMeta) *tpmcrypto.DataKeyMeta {
 	return &tpmcrypto.DataKeyMeta{
 		KeyId:         m.KeyID,
 		Algorithm:     algToProto(m.Algorithm),
@@ -184,7 +185,7 @@ func mapErr(err error) error {
 		return nil
 	}
 	switch {
-	case errIs(err, common.ErrNotFound, "not found"):
+	case errIs(err, common.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errIs(err, common.ErrKeyIDExists):
 		return status.Error(codes.AlreadyExists, err.Error())

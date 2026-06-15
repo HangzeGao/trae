@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -20,7 +21,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/tpm-crypto/tpm-crypto-service/api/gen/go"
 	tpmcrypto "github.com/tpm-crypto/tpm-crypto-service/api/gen/go"
 	"github.com/tpm-crypto/tpm-crypto-service/internal/config"
 	"github.com/tpm-crypto/tpm-crypto-service/internal/obs"
@@ -44,7 +44,8 @@ func NewGRPC(cfg *config.Config, log *zap.Logger, impl *service.Service) (*GRPCS
 	}
 	creds := grpc.Creds(insecure.NewCredentials())
 	if cfg.Server.TLS.Enabled {
-		creds = grpc.Creds(credentials.NewServerTLSFromCert(&dummyCert{}))
+		// 占位:真实部署应从 cfg.Server.TLS.{cert,key} 加载
+		creds = grpc.Creds(credentials.NewServerTLSFromCert(&tls.Certificate{}))
 	}
 	srv := grpc.NewServer(
 		creds,
@@ -85,7 +86,7 @@ type HTTPGateway struct {
 // NewHTTP 构造并启动 HTTP Gateway(:8080,含 /healthz、/metrics)。
 func NewHTTP(ctx context.Context, cfg *config.Config, log *zap.Logger, impl *service.Service, m *obs.Metrics) (*HTTPGateway, error) {
 	rmux := runtime.NewServeMux(
-		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.HTTPProtoMarshaler{
+		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
 			MarshalOptions:   protojson.MarshalOptions{UseProtoNames: true},
 			UnmarshalOptions: protojson.UnmarshalOptions{DiscardUnknown: true},
 		}),
@@ -96,7 +97,7 @@ func NewHTTP(ctx context.Context, cfg *config.Config, log *zap.Logger, impl *ser
 	}
 	root := http.NewServeMux()
 	root.HandleFunc("/healthz", healthzHandler(impl))
-	root.Handle("/metrics", obs.MetricsHandler(m.Registry()))
+	root.Handle("/metrics", obs.MetricsHandler(obs.PrometheusRegistry))
 	root.Handle("/", rmux)
 
 	srv := &http.Server{
@@ -168,11 +169,6 @@ func unaryInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
 		return resp, nil
 	}
 }
-
-// dummyCert 仅为占位,真实部署应配置 cfg.Server.TLS.{cert,key,ca}。
-type dummyCert struct{}
-
-func (d *dummyCert) Certificate() [][]byte { return nil }
 
 // 为 gRPC service 避免 unused import 警告:健康检查 enum
 var _ = codes.OK

@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tpm-crypto-service
+  namespace: tpm-crypto
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    # 如需 gRPC,可启用 grpc-backend
+    # nginx.ingress.kubernetes.io/backend-protocol: GRPC
+spec:
+  rules:
+    - host: crypto.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tpm-crypto-service
+                port:
+                  number: 8080

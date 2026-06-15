@@ -57,13 +57,18 @@ func TestMemoryGetLatestActive(t *testing.T) {
 	require.Equal(t, uint64(2), got.Version)
 }
 
-func TestMemoryConflictOnDuplicateVersion(t *testing.T) {
+func TestMemoryUpsertOnDuplicateVersion(t *testing.T) {
 	ks := NewMemory()
 	defer ks.Close()
 	d := &WrappedDEK{KeyID: "k", Algorithm: common.AES, KeyLengthBits: 128, Version: 1, Status: common.Active, CreatedAt: time.Now(), WrappedKey: []byte{0x01}}
 	require.NoError(t, ks.Put(context.Background(), d))
-	err := ks.Put(context.Background(), d)
-	require.ErrorIs(t, err, ErrConflict)
+	// 同 (keyID, version) 覆写允许(rotate 后 status 变更场景)
+	d2 := d
+	d2.Status = common.Retired
+	require.NoError(t, ks.Put(context.Background(), d2))
+	got, err := ks.Get(context.Background(), "k", 1)
+	require.NoError(t, err)
+	require.Equal(t, common.Retired, got.Status)
 }
 
 func TestBoltRoundTrip(t *testing.T) {

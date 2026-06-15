@@ -91,9 +91,8 @@ func (m *MemoryKeystore) Put(_ context.Context, dek *WrappedDEK) error {
 		vs = make(map[uint64]*WrappedDEK)
 		m.store[dek.KeyID] = vs
 	}
-	if _, exists := vs[dek.Version]; exists {
-		return ErrConflict
-	}
+	// 业务允许 status 变更(例如 rotated 后的 retired)覆写同一 (keyID, version)。
+	// 真正的版本冲突应在调用方通过先 GetLatestActive 拒绝。
 	cp := *dek
 	cp.WrappedKey = append([]byte(nil), dek.WrappedKey...)
 	vs[dek.Version] = &cp
