@@ -327,6 +327,22 @@ flowchart TB
 
 P0 可以采用单二进制多模块部署，以降低部署复杂度；但代码层必须保持模块边界，避免后续拆分困难。
 
+数据库角色拆分（P0 起强制，对应 HA-06）：
+
+| DB 角色 | 权限范围 | 使用方 | 禁止权限 |
+| --- | --- | --- | --- |
+| `kv_app_rw` | `keys`、`key_versions`、`dek_leases`、`nonce_leases`、`outbox_events`、`audit_events`、`idempotency_keys` 的 DML | management-api、crypto-api、key-resolver | 任何 DDL、`crk_node_envelopes` 明文列直读 |
+| `kv_resolver_rw` | `crk_node_envelopes`、`crk_versions` 的 DML | key-resolver 专用 | DDL、跨平面表写权限 |
+| `kv_worker_rw` | `lifecycle_jobs`、`outbox_events` 消费标记 | lifecycle-worker | DDL、密钥材料表写 |
+| `kv_audit_w` | `audit_events`、`audit_chain_heads` 追加写 | audit-forwarder | UPDATE/DELETE、其他表 |
+| `kv_migrate` | 全部 DDL | 迁移工具独立凭证，仅在迁移窗口启用 | 常驻运行时禁用 |
+
+约束：
+
+- API 服务进程不得持有任何 DDL 权限，防止 SQL 注入升级为结构篡改。
+- `crk_node_envelopes` 的明文封装列仅 `kv_resolver_rw` 可读，数据面 DB 角色不得授予该列读权限。
+- 迁移凭证与运行时凭证分离，迁移完成后迁移凭证应禁用或回收。
+
 ### 4.5 控制面/数据面隔离策略
 
 采纳专家建议，但按阶段落地：
@@ -338,6 +354,13 @@ P0 可以采用单二进制多模块部署，以降低部署复杂度；但代�
 | P2 | 网络/物理强化 | 管理面独立域名、IP allowlist、WAF、mTLS、专用节点池或独立集群。 |
 
 数据面节点只能加载 DEK lease cache，不暴露密钥管理接口。管理/密钥面节点才允许解封 CRK 和创建新 KeyVersion。数据面被攻陷时，攻击者最多影响短 TTL DEK lease 和其权限范围内的数据操作，不能触发密钥轮转、销毁或 CRK 操作。
+
+错误响应边界（P0 起强制，对应 HA-11）：
+
+- 跨租户的资源不存在与权限不足必须返回同一错误码（统一 `PERMISSION_DENIED` 或统一 `KEY_NOT_FOUND`，由全局策略选定），避免攻击者通过错误码差异枚举 `key_id`、`tenant_id` 是否存在。
+- 错误响应不得携带租户内部命名、内部状态机细节、内部节点 ID 等可被枚举的元数据。
+- 数据面与管理面对外错误模型一致，禁止数据面返回管理面专属错误细节。
+- 响应时间差异需通过统一处理路径收敛，避免存在性探测基于时延侧信道。
 
 ### 4.6 模块依赖图
 
@@ -392,6 +415,14 @@ string_to_sign =
 signature = base64url(HMAC-SHA256(service_secret, string_to_sign))
 ```
 
+HMAC 签名覆盖要求（P0 起强制，对应 HA-02）：
+
+- 签名必须覆盖 `method`、`path`、`sha256(body)`、`timestamp`、`nonce`、`node_id` 全部六项，缺一拒绝。
+- `sha256(body)` 必须基于规范化后的请求体计算，禁止仅签名 URI 而忽略 body。
+- `nonce` 必须在 `timestamp ± 300s` 窗口内全局唯一，存储窗口至少覆盖 2 倍时间偏差。
+- 服务端必须先校验 `timestamp` 窗口，再校验 `nonce` 唯一性，最后校验签名，避免 nonce 存储被无效请求污染。
+- GET 请求 body 为空时 `sha256(body)` 使用空字节串的哈希固定值。
+
 服务端校验要求：
 
 - `timestamp` 与服务端时间偏差默认不超过 300 秒。
@@ -399,6 +430,17 @@ signature = base64url(HMAC-SHA256(service_secret, string_to_sign))
 - `node_id` 必须处于 `READY` 或 P0 允许的 `REGISTERED` 状态。
 - `aud` 必须匹配目标服务，禁止跨服务 token 复用。
 - 禁止 JWT `alg=none`，固定算法白名单。
+
+JWT 必校验字段（P0 起强制，对应 HA-01）：
+
+- `iss`：必须匹配预配置 issuer 白名单。
+- `aud`：必须匹配目标服务，禁止跨服务复用。
+- `exp`：必须存在且未过期；高权限 scope token 默认 TTL ≤ 15 分钟。
+- `nbf`：存在时必须生效。
+- `kid`：必须存在并通过 JWK 缓存解析到具体公钥，禁止接受无 `kid` 的 token。
+- `alg`：固定白名单（如 `RS256`、`ES256`），禁止 `none`、禁止算法协商降级。
+- `sub`/`tenant_id`：必须存在并参与 ABAC 判定。
+- `scope`：必须存在，高权限 scope（`keys:rotate`、`keys:destroy`、`nodes:manage`、`policies:manage`）必须独立签发，不得与数据面 scope 合并到同一 token。
 
 ### 5.2 P1/P2 认证增强
 
@@ -431,6 +473,14 @@ ABAC 约束：
 - `key_id` 必须属于当前租户或当前业务域。
 - 管理 API 禁止由数据面 service token 调用。
 - 高风险操作必须检查 `approval_id` 或二次确认状态。
+
+DataKey 专项约束（P0 起强制，对应 HA-10）：
+
+- `datakey:generate` 必须独立签发，不得与 `crypto:encrypt`/`crypto:decrypt` 合并到同一 scope 集合，降低 token 泄露后的明文密钥外泄面。
+- DataKey 接口必须按租户配置 quota（默认每租户每分钟 N 次，可配置），超 quota 返回 `429`。
+- DataKey 明文 TTL 上限默认 5 分钟，禁止配置超过 15 分钟；TTL 必须在响应中显式返回。
+- DataKey 接口必须记录独立审计事件，包含 `tenant_hash`、`key_id_hash`、`purpose`、`ttl`、`request_id`，不记录明文。
+- 直接 API 调用 DataKey（非 SDK）必须标记 `caller=direct`，便于异常解密检测时优先审查。
 
 ### 5.4 认证授权链路图
 
@@ -534,12 +584,15 @@ P0：
 - 通过数据库版本号、状态机和事务锁防止普通并发回滚。
 - `key_version.version_no` 单调递增。
 - CRK 版本和策略版本必须随审计记录保留。
+- 引入 `cluster_epoch` 字段骨架（对应 HA-08）：在 `crk_versions` 表预留 `epoch` 列，P0 由数据库单调递增维护（每次 CRK envelope 重新封装或节点 READY 状态变更时 +1），P1 起由 TPM NV counter 或等价平台机制背书。P0 的 `epoch` 不提供硬件级防回滚，但为 P1/P2 升级提供数据骨架和审计锚点。
+- `nodes` 表预留 `attestation_epoch` 列，P0 写入静态注册时的 `cluster_epoch` 快照，P1 起由 Attestation Service 写入证明纪元。
 
 P1/P2：
 
-- 使用 TPM NV counter 或等价平台机制记录 `epoch`。
-- 节点证明结果绑定 `attestation_epoch`。
+- 使用 TPM NV counter 或等价平台机制记录 `epoch`，覆盖 P0 数据库 `epoch`，并校验数据库 `epoch` 不低于 NV counter。
+- 节点证明结果绑定 `attestation_epoch`，证明过期或回滚时 `attestation_epoch` 与 `cluster_epoch` 偏差超阈值即撤销 lease。
 - 恢复演练验证数据库快照、CRK envelope、epoch 和审计链一致。
+- vTPM 快照回滚检测：CRK envelope 解封时校验 `cluster_epoch` 与节点当前 `attestation_epoch` 一致，旧 epoch 拒绝解封。
 
 ## 7. 业务优先需求拆分
 
@@ -731,6 +784,15 @@ nonce = domain(32 bit) || counter(64 bit)
 - 单节点异常消耗可冻结其新加密能力。
 - 节点优雅退出时释放未使用区间。
 - 非优雅退出依赖 TTL 或心跳超时回收，已使用区间不得再分配。
+
+nonce 速率治理与节点冻结（P0 起强制，对应 HA-04）：
+
+- 每个 `key_version_id × node_id` 维护滚动窗口 nonce 消耗速率基线（默认 1 分钟窗口），偏离基线 3 倍标准差或绝对阈值（可配置）即告警。
+- 速率异常节点进入 `FROZEN` 状态：该节点的新 nonce 区间分配被拒绝，已分配未耗尽区间允许继续使用至耗尽或 TTL 到期，避免在途请求失败。
+- `FROZEN` 节点必须经管理 API 显式解冻（`nodes:manage` scope）并记录审计，禁止自动解冻。
+- 70% 水位预取失败时进入 `DEGRADED` 模式：限制新加密并发，触发告警；90% 水位仍未续租则 fail-closed 拒绝新加密。
+- nonce 区间耗尽且无新区间可用时，对应 `key_version` 在该节点的新加密全部 fail-closed，旧密文解密不受影响。
+- 单飞保护：同一 `key_version_id` 的 nonce 续租请求在 resolver 侧合并，避免 cache miss 风暴放大 TPM 压力。
 
 ### 8.3 Envelope v1
 
@@ -973,6 +1035,15 @@ sequenceDiagram
 - 返回结果必须有 TTL、用途、租户、key version 绑定。
 - 日志和审计不得记录明文 DataKey。
 
+DataKey 治理约束（P0 起强制，对应 HA-10）：
+
+- DataKey 接口前置 quota 检查：按 `tenant_id` 维度限流（默认每分钟 N 次，可配置），超限返回 `429 NONCE_EXHAUSTED` 或专用 `RATE_LIMITED`。
+- DataKey 明文 TTL 上限默认 5 分钟，最大不超过 15 分钟；请求中 `ttl` 超过上限自动截断并告警。
+- DataKey 响应必须包含 `key_id`、`key_version`、`suite_id`、`expires_at`、`purpose`，便于 SDK 在过期前主动零化。
+- DataKey 接口与 `crypto:encrypt`/`crypto:decrypt` 走独立 scope 校验路径，禁止同一 token 同时持有 DataKey 和加解密 scope。
+- DataKey 调用必须记录独立审计事件 `datakey.generated`，包含 `tenant_hash`、`key_id_hash`、`purpose`、`ttl`、`caller`（`sdk`/`direct`），不记录明文。
+- 异常检测：单租户 DataKey 调用速率突增或 `caller=direct` 占比异常时触发告警，便于识别明文密钥外泄风险。
+
 ### 9.8 密钥销毁流程
 
 ```mermaid
@@ -1023,6 +1094,25 @@ suites:
     composition: encrypt_then_mac
     status: decrypt_only
 ```
+
+策略签名字段骨架（P0 起预留，对应 HA-05）：
+
+```yaml
+# P0 预留字段，P1 起强制校验
+signature:
+  alg: ES256         # 签名算法，P0 可空，P1 起必填
+  key_id: policy-signing-key-v1
+  sig: ""            # base64 签名，P0 可空，P1 起必填
+  signed_payload_hash: ""  # 规范化策略体的 SHA-256
+```
+
+P0 策略安全默认值（强制）：
+
+- 所有 CBC、ECB 套件默认 `status: decrypt_only`，禁止新加密。
+- `default_suite` 必须为 AEAD 套件（GCM 系）。
+- 策略降级（将 `active` 套件改为 `decrypt_only` 或 `disabled` 之外的更宽松状态、或启用 ECB 新加密）必须经管理 API 显式审批字段（P0 预留 `approval_id`，P1 起强制非空）。
+- P0 策略加载时校验 `signature` 字段存在性（允许空值），P1 起校验签名有效性和 `key_id` 白名单。
+- 策略变更必须写审计事件 `policy.changed`，包含 `policy_id`、`old_version`、`new_version`、`changed_suites`。
 
 ### 10.2 策略状态
 
@@ -1114,9 +1204,39 @@ erDiagram
         string node_id
         string role
         string status
+        string ready_reason
         int attestation_epoch
+        int cluster_epoch
     }
 ```
+
+`nodes` 表新增字段（对应 HA-08、HA-11）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `ready_reason` | 准入依据：`static_registration`（P0）、`attestation`（P1+）。用于审计和风险分级，区分节点是凭静态注册还是凭证明进入 READY。 |
+| `attestation_epoch` | 证明纪元快照，P0 写入静态注册时的 `cluster_epoch`，P1 起由 Attestation Service 写入。 |
+| `cluster_epoch` | 节点 READY 时集群 epoch 快照，用于 vTPM 回滚检测时比对。 |
+
+数据库角色与表权限映射（对应 HA-06，详见 4.4 部署单元）：
+
+| 表 | `kv_app_rw` | `kv_resolver_rw` | `kv_worker_rw` | `kv_audit_w` |
+| --- | --- | --- | --- | --- |
+| `keys`、`key_versions` | RW | — | R | — |
+| `crk_versions`、`crk_node_envelopes` | — | RW | R | — |
+| `dek_leases`、`nonce_leases` | RW | RW | R | — |
+| `nodes` | RW | R | R | — |
+| `crypto_policies` | R | R | R | — |
+| `audit_events`、`audit_chain_heads` | — | — | — | INSERT only |
+| `outbox_events` | RW | — | RW（消费标记） | — |
+| `lifecycle_jobs` | — | — | RW | — |
+| `idempotency_keys` | RW | — | — | — |
+
+约束：
+
+- `crk_node_envelopes` 的明文封装列仅 `kv_resolver_rw` 可读，数据面 DB 角色不得授予该列读权限。
+- `audit_events`、`audit_chain_heads` 仅允许追加写（INSERT），禁止 UPDATE/DELETE，由数据库触发器或角色权限强制。
+- 所有角色均无 DDL 权限，DDL 仅 `kv_migrate` 在迁移窗口持有。
 
 ### 11.2 关键字段
 
@@ -1414,6 +1534,15 @@ scripts/
 | `auth` | JWT/HMAC/Principal 解析 | 不写业务数据。 |
 | `audit` | 审计事件构造、脱敏、输出 | 不记录敏感明文。 |
 
+状态迁移集中化约束（P0 起强制，对应 HA-06）：
+
+- `Key`、`KeyVersion`、`Node` 的状态迁移函数必须集中在 `internal/domain` 对应子包，以纯函数或领域服务形式实现，输入为当前状态 + 触发事件，输出为新状态或错误。
+- `repository` 层只负责持久化领域层计算出的新状态，禁止在 SQL、触发器或应用层散落状态判断逻辑。
+- `application` 层调用领域层状态迁移函数后，再调用 repository 持久化，禁止 application 层自行拼凑状态字符串。
+- 状态迁移函数必须有完整单元测试覆盖合法迁移路径和非法迁移拒绝路径，非法迁移必须返回错误而非静默接受。
+- DB 角色权限（见 11.1）保证即使应用层被绕过，`kv_app_rw` 也无法直接 UPDATE 状态列到非法值（通过 CHECK 约束或触发器辅助）。
+- `current_version` 切换、`wrapped_dek` 写入、状态变更必须在同一数据库事务内，由 application 层编排，repository 层不跨表自行决策。
+
 ### 13.4 核心接口
 
 ```go
@@ -1511,6 +1640,27 @@ P0 先实现结构化审计事件，满足排障和基本追踪：
 - DEK、CRK。
 - wrapped_dek 完整值。
 - 完整 Envelope。
+
+高风险操作本地 WAL 骨架（P0 起强制，对应 HA-07）：
+
+P0 必须为高风险操作提供本地 WAL 骨架，确保审计不可用时高风险操作 fail-closed，而非静默成功。
+
+| 高风险操作 | P0 处理 | P1 升级 |
+| --- | --- | --- |
+| 创建 CRK | 本地 WAL 写入成功后再提交业务事务 | 同步 WAL + 哈希链 |
+| 节点注册/撤销 | 本地 WAL 写入成功后再提交 | 审批 + 证明报告归档 |
+| 密钥销毁（进入 DESTROY_PENDING） | 本地 WAL 写入成功后再提交 | 审批 + 冷静期 + WAL |
+| 策略降级 | 本地 WAL 写入成功后再提交 | 审批 + 签名策略包 |
+| 密钥轮转 | 本地 WAL 写入成功后再提交 | 同步 WAL + 哈希链 |
+
+WAL 骨架实现要求：
+
+- WAL 文件独立于业务数据库，使用追加写 + fsync，避免数据库故障导致 WAL 丢失。
+- WAL 写入失败时，对应高风险操作必须 fail-closed 拒绝，不得降级为仅写结构化审计事件。
+- WAL 记录包含 `event_id`、`action`、`target_hash`、`actor_hash`、`timestamp`、`request_id`、`prev_wal_hash`（P0 可空，P1 起填充形成哈希链）。
+- WAL 文件按大小或时间滚动，保留周期至少覆盖一次恢复演练窗口。
+- P0 不要求 WAL 外部锚定，但必须提供 WAL 回放工具，能在恢复时重放高风险操作序列。
+- WAL 与 `audit_events` 表关系：WAL 是高风险操作的强一致前置证据，`audit_events` 是全量结构化事件；P1 起 Audit Forwarder 消费 WAL 并推进哈希链。
 
 ### 15.2 P1 哈希链
 
@@ -1620,6 +1770,17 @@ P0 可先提供 Go SDK，封装：
 | `TPM_UNAVAILABLE` | 503 | true | TPM/vTPM 不可用。 |
 | `DB_CONFLICT` | 409 | true | 并发状态冲突。 |
 | `AUDIT_UNAVAILABLE` | 503 | true | 高风险审计不可用。 |
+| `RATE_LIMITED` | 429 | true | DataKey 或加密接口 quota 超限。 |
+
+错误码统一处理原则（P0 起强制，对应 HA-11）：
+
+- 跨租户的资源访问，无论资源不存在还是权限不足，统一返回 `PERMISSION_DENIED`（推荐）或统一返回 `KEY_NOT_FOUND`，由全局配置选定，禁止按真实原因区分，避免存在性枚举。
+- 错误响应 `message` 字段为通用人类可读描述，不得包含租户内部命名、内部状态机细节、内部节点 ID、SQL 错误、堆栈信息。
+- 数据面与管理面对外错误模型一致，数据面不得返回管理面专属错误码（如 `nodes:manage` 相关错误）。
+- 内部错误（如 DB 连接失败、TPM 异常）统一映射为 `TPM_UNAVAILABLE` 或 `DB_CONFLICT`，不暴露底层组件名和版本。
+- 错误响应时间差异需通过统一处理路径收敛：所有 404/403 路径必须执行等价工作量（如统一查询 + 统一延迟填充），避免基于时延的存在性侧信道。
+- `RATE_LIMITED` 与 `NONCE_EXHAUSTED` 区分：前者为租户 quota 超限，后者为节点 nonce 区间耗尽，便于运维定位但对外都返回 429。
+- 错误码 `code` 字段稳定，`message` 可调整；客户端不得依赖 `message` 文本做分支判断。
 
 ### 18.2 日志字段
 
@@ -2220,6 +2381,15 @@ Envelope 是长期数据格式，兼容性要求高于 API。
 - 缓存 DEK lease 时必须有 TTL、LRU、容量限制和撤销通道。
 - P1/P2 可评估 `mlock`、进程隔离、memguard、TEE，但不得把这些视为对内核级攻击的绝对防护。
 
+panic dump 与核心转储防护（P0 起强制，对应 HA-03）：
+
+- 进程启动时通过 `prctl(PR_SET_DUMPABLE, 0)` 或等价机制禁用核心转储，避免 CRK/DEK 明文被写入 core dump 文件。
+- Go runtime panic recovery 必须在所有持有明文密钥的临界区外层包裹，panic 时先零化敏感缓冲区再向上传播，禁止 panic 栈携带敏感字节。
+- 错误对象（`error` 接口实现）不得包装敏感字节切片；敏感操作失败时返回通用错误码，详细原因仅写本地 WAL 或内部日志（脱敏后）。
+- goroutine panic 被 recover 后，对应请求必须返回 `TPM_UNAVAILABLE` 或 `DB_CONFLICT`，不得继续使用可能未零化的密钥材料。
+- 堆 profile、goroutine dump、pprof 端点在 P0 默认关闭，仅在运维明确授权时通过管理 API 短时开启，且开启期间禁止执行涉及 CRK/DEK 明文的操作。
+- 内存转储工具、调试器 attach 在生产环境应被 SECCOMP 或容器安全策略禁止。
+
 ### 24.5 安全边界图
 
 ```mermaid
@@ -2279,11 +2449,11 @@ flowchart TB
 
 ## 25. 攻防推演与架构加固
 
-本章按照用户指定的角色划分：先以“蓝军攻击视角”主动寻找架构漏洞和可利用路径，再以“红军加固视角”提出架构级补强方案。这里的目标不是给出可直接复现的攻击步骤，而是形成安全评审、开发整改和运维加固可以共同使用的攻防清单。
+本章按照"蓝军攻击视角 → 红军加固视角"的双角色对抗结构组织。与初版不同，本版的加固方案（HA-01 ~ HA-12）已反哺到第 4、5、6、8、9、10、11、13、15、18、24、26 章的架构设计中，形成"架构内嵌防御"。本章的作用从"事后补强清单"升级为"攻防对抗验证矩阵"：蓝军假设架构已部署，寻找仍存在的攻击路径；红军验证内嵌防御是否生效，并标注剩余风险与后续深化方向。
 
 ### 25.1 蓝军攻击视角：攻击面总览
 
-攻击者可从身份、网络、API、数据面、密钥面、TPM/vTPM、数据库、审计、供应链、运维流程等多个方向尝试突破。最需要关注的是“跨平面横向移动”和“短时密钥材料扩大化”两类问题。
+攻击者可从身份、网络、API、数据面、密钥面、TPM/vTPM、数据库、审计、供应链、运维流程等多个方向尝试突破。最需要关注的是"跨平面横向移动"和"短时密钥材料扩大化"两类问题。
 
 | 攻击面 | 可能攻击目标 | 主要风险 |
 | --- | --- | --- |
@@ -2315,97 +2485,111 @@ flowchart LR
     H -- DEK lease --> J["短时数据解密<br/>受 TTL/用途限制"]
     H -- CRK 临界区 --> K["严重事件<br/>触发 CRK 轮转与影响评估"]
 
-    F --> L["加固控制<br/>审批/ABAC/WAL/策略签名"]
-    G --> M["加固控制<br/>quota/限流/用途绑定/异常检测"]
-    I --> N["加固控制<br/>CRK 不入库/TPM/证明/防回滚"]
-    J --> O["加固控制<br/>短 TTL/撤销/缓存清理"]
-    K --> P["加固控制<br/>隔离/零化/应急轮转/审计回放"]
+    F --> L["架构内嵌防御<br/>WAL前置/ABAC/策略签名/状态机集中"]
+    G --> M["架构内嵌防御<br/>DataKey独立scope/quota/nonce冻结/错误码统一"]
+    I --> N["架构内嵌防御<br/>CRK不入库/DB角色拆分/epoch骨架/TPM隔离"]
+    J --> O["架构内嵌防御<br/>短TTL/撤销广播/panic零化/resolver单飞"]
+    K --> P["架构内嵌防御<br/>隔离/零化/应急轮转/审计回放"]
 ```
 
-### 25.3 蓝军攻击路径与漏洞分析
+### 25.3 蓝军攻击路径与红军防御对照
 
-| 编号 | 攻击路径 | 可利用设计缺口 | 影响 | 当前设计防护 | 剩余风险 |
-| --- | --- | --- | --- | --- | --- |
-| BA-01 | 窃取业务服务 Token 后批量调用 Decrypt | P0 未强制 mTLS，Token 与工作负载绑定较弱 | 批量数据泄露 | JWT aud/exp/scope、租户隔离、限流 | Token 泄露窗口内仍可滥用。 |
-| BA-02 | 重放 HMAC 签名请求 | nonce 存储窗口过短或未覆盖 body hash | 重复 DataKey 或管理操作 | timestamp、nonce、body hash、幂等键 | 时钟漂移和 nonce 存储容量需治理。 |
-| BA-03 | 数据面节点失陷后读取 DEK lease cache | DEK 明文短时存在内存 | 租户范围内短时解密 | TTL、用途绑定、撤销、零化 | 同权限进程或内核级攻击仍有风险。 |
-| BA-04 | 攻击 nonce lease 造成 GCM nonce 耗尽 | 单节点异常消耗未及时熔断 | 拒绝服务，极端情况下诱发实现缺陷 | 预取水位、耗尽拒绝 | 需要速率异常检测和自动隔离。 |
-| BA-05 | 通过管理 API 降级 Crypto Policy | 策略变更审批不足 | 新密文使用弱算法或错误模式 | 策略状态、审计 | P0 策略热更新能力弱，审批未完整。 |
-| BA-06 | 修改数据库 `current_version` 或 KeyVersion 状态 | DB 权限过宽或缺少完整性校验 | 密钥回滚、旧版本被重新用于加密 | 事务锁、状态机、审计 | DB 管理员或注入攻击仍是高风险。 |
-| BA-07 | 删除或延迟审计事件 | P0 审计未上 WAL/哈希链 | 取证不完整 | 结构化审计、脱敏日志 | P0 无强不可篡改性。 |
-| BA-08 | 利用 vTPM 快照回滚到旧 PCR/旧 NRWK 状态 | vTPM 依赖宿主机安全边界 | 解封旧 CRK envelope 或绕过证明 | vTPM 边界说明、P1 远程证明 | P0 防回滚能力有限。 |
-| BA-09 | 供应链植入关闭日志脱敏或泄露 DEK | 构建和镜像签名未强制 | 大范围密钥材料泄露 | 代码审查、敏感日志测试 | P0 供应链治理不足。 |
-| BA-10 | 滥用 DataKey 接口转移明文密钥到业务侧 | DataKey scope、TTL、用途限制不足 | 客户端侧密钥泄露扩大 | TTL、scope、审计 | SDK 外部直接调用仍需强约束。 |
-| BA-11 | 利用错误信息枚举 key_id、tenant_id、状态 | 错误码或响应时间差异过大 | 元数据泄露、辅助攻击 | 统一错误模型 | 需要模糊化部分错误细节。 |
-| BA-12 | 攻击 key-resolver 触发频繁 CRK 解封 | cache miss 风暴或恶意租约申请 | TPM 压力、CRK 明文窗口增加 | DEK cache、限流 | 需要 resolver 级熔断和请求合并。 |
+本表将每条蓝军攻击路径与已内嵌到架构的红军防御项一一对照，标注防御落点章节和剩余风险。防御项编号 HA-xx 与 25.5 节一致，落点章节表示该防御已写入架构设计而非仅作为加固建议。
 
-### 25.4 红军加固视角：架构补强总览
+| 编号 | 蓝军攻击路径 | 可利用设计缺口 | 影响 | 红军防御（已内嵌架构） | 防御落点 | 剩余风险 |
+| --- | --- | --- | --- | --- | --- | --- |
+| BA-01 | 窃取业务服务 Token 后批量调用 Decrypt | P0 未强制 mTLS，Token 与工作负载绑定较弱 | 批量数据泄露 | HA-01：JWT 必校验 iss/aud/exp/nbf/kid/alg；高权限 scope 独立签发；短 TTL | 第 5 章 | Token 泄露窗口内仍可滥用，需 P1 mTLS 收敛。 |
+| BA-02 | 重放 HMAC 签名请求 | nonce 存储窗口过短或未覆盖 body hash | 重复 DataKey 或管理操作 | HA-02：HMAC 覆盖 method/path/body hash/timestamp/nonce/node_id 六项；nonce 窗口内唯一 | 第 5 章 | 时钟漂移和 nonce 存储容量需治理。 |
+| BA-03 | 数据面节点失陷后读取 DEK lease cache | DEK 明文短时存在内存 | 租户范围内短时解密 | HA-03：DEK cache TTL/LRU/撤销；panic dump 禁出敏感字节；core dump 禁用 | 第 24、26 章 | 同权限进程或内核级攻击仍有风险。 |
+| BA-04 | 攻击 nonce lease 造成 GCM nonce 耗尽 | 单节点异常消耗未及时熔断 | 拒绝服务，极端情况下诱发实现缺陷 | HA-04：nonce 速率基线；FROZEN 状态；70%/90% 水位；fail-closed；单飞保护 | 第 8 章 | 需 P1 完整异常检测和自动隔离。 |
+| BA-05 | 通过管理 API 降级 Crypto Policy | 策略变更审批不足 | 新密文使用弱算法或错误模式 | HA-05：策略签名字段骨架；CBC/ECB 默认 decrypt_only；降级需 approval_id | 第 10 章 | P0 签名可空，P1 起强制验签。 |
+| BA-06 | 修改数据库 current_version 或 KeyVersion 状态 | DB 权限过宽或缺少完整性校验 | 密钥回滚、旧版本被重新用于加密 | HA-06：DB 角色五分（kv_app_rw/kv_resolver_rw/kv_worker_rw/kv_audit_w/kv_migrate）；状态迁移集中 domain 层；audit 表 INSERT only | 第 4、11、13 章 | DB 管理员或物理访问仍是高风险。 |
+| BA-07 | 删除或延迟审计事件 | P0 审计未上 WAL/哈希链 | 取证不完整 | HA-07：高风险操作本地 WAL 骨架；WAL 写入失败 fail-closed；WAL 回放工具 | 第 15 章 | P0 无外部锚定，P1 起哈希链。 |
+| BA-08 | 利用 vTPM 快照回滚到旧 PCR/旧 NRWK 状态 | vTPM 依赖宿主机安全边界 | 解封旧 CRK envelope 或绕过证明 | HA-08：cluster_epoch 字段骨架；nodes.attestation_epoch；P1 Attestation Service；P2 NV counter | 第 6 章 | P0 epoch 无硬件背书，P1/P2 收敛。 |
+| BA-09 | 供应链植入关闭日志脱敏或泄露 DEK | 构建和镜像签名未强制 | 大范围密钥材料泄露 | HA-09：CI secret scan、依赖扫描、最小镜像、SBOM、镜像签名 | 第 21.10 章 | P0 供应链治理不足，P2 收敛。 |
+| BA-10 | 滥用 DataKey 接口转移明文密钥到业务侧 | DataKey scope、TTL、用途限制不足 | 客户端侧密钥泄露扩大 | HA-10：datakey:generate 独立 scope；租户 quota；TTL 上限 5 分钟；caller 标记；异常检测 | 第 5、9 章 | SDK 外部直接调用仍需强约束。 |
+| BA-11 | 利用错误信息枚举 key_id、tenant_id、状态 | 错误码或响应时间差异过大 | 元数据泄露、辅助攻击 | HA-11：跨租户 404/403 统一；message 通用化；等价工作量防时延侧信道 | 第 4、18 章 | 需持续审查新增错误路径。 |
+| BA-12 | 攻击 key-resolver 触发频繁 CRK 解封 | cache miss 风暴或恶意租约申请 | TPM 压力、CRK 明文窗口增加 | HA-12：singleflight；cache miss 限流；TPM 解封并发上限；DEK lease 异步预取；resolver 降级 | 第 26 章 | TPM 物理故障时仍需人工介入。 |
 
-加固原则是“缩小身份可用窗口、缩小密钥明文窗口、缩小跨平面移动路径、增强证据不可抵赖性、让异常自动收敛”。
+### 25.4 红军加固视角：架构内嵌防御总览
 
-| 加固域 | P0 立即补强 | P1/P2 深化 |
+加固原则是"缩小身份可用窗口、缩小密钥明文窗口、缩小跨平面移动路径、增强证据不可抵赖性、让异常自动收敛"。本版的加固方案已从"建议补强"升级为"架构契约"，对应章节强制执行。
+
+| 加固域 | P0 架构内嵌防御（已落地章节） | P1/P2 深化 |
 | --- | --- | --- |
-| 身份绑定 | 短期 token、HMAC 覆盖 body hash、nonce 防重放、scope 最小化 | mTLS、Workload Identity、Attestation Token。 |
-| 管理 API | 高风险操作二次确认、强 ABAC、IP allowlist、幂等键 | 双人审批、MFA、独立管理域名。 |
-| 数据 API | DataKey 单独 scope、quota、用途绑定、响应大小限制 | SDK 强制封装、异常解密检测。 |
-| 数据面 | DEK lease TTL 1-5 分钟、LRU、撤销广播、节点隔离 | 证明绑定 lease、进程隔离、TEE/HSM 评估。 |
-| 密钥面 | key-resolver 内网隔离、CRK 临界区零化、请求合并 | Policy Session、CRK 分片恢复、CRK 轮转。 |
-| 数据库 | 最小 DB 权限、行级租户约束、迁移审计、状态校验 | 关键字段签名/摘要、不可变历史表。 |
-| 审计 | 高风险本地 WAL 骨架、敏感字段扫描 | 哈希链、外部锚点、审计验证工具。 |
-| 策略 | 策略包签名字段预留、suite 禁用默认安全 | 热更新验签、灰度、策略降级审批。 |
-| 供应链 | secret scan、依赖扫描、镜像最小化 | SBOM、镜像签名、SLSA/构建溯源。 |
+| 身份绑定 | JWT 必校验六字段、HMAC 覆盖六项、高权限 scope 独立签发（第 5 章） | mTLS、Workload Identity、Attestation Token。 |
+| 管理 API | 高风险操作 WAL 前置、强 ABAC、IP allowlist、幂等键（第 15 章） | 双人审批、MFA、独立管理域名。 |
+| 数据 API | DataKey 独立 scope、quota、TTL 上限、caller 标记（第 5、9 章） | SDK 强制封装、异常解密检测。 |
+| 数据面 | DEK lease TTL/LRU/撤销、panic 零化、core dump 禁用（第 24、26 章） | 证明绑定 lease、进程隔离、TEE/HSM 评估。 |
+| 密钥面 | key-resolver 内网隔离、CRK 临界区零化、singleflight、TPM 并发上限（第 26 章） | Policy Session、CRK 分片恢复、CRK 轮转。 |
+| 数据库 | DB 角色五分、状态迁移集中 domain 层、audit 表 INSERT only（第 4、11、13 章） | 关键字段签名/摘要、不可变历史表。 |
+| 审计 | 高风险本地 WAL 骨架、WAL 回放工具、敏感字段扫描（第 15 章） | 哈希链、外部锚点、审计验证工具。 |
+| 策略 | 策略签名字段骨架、CBC/ECB 默认 decrypt_only、降级需 approval_id（第 10 章） | 热更新验签、灰度、策略降级审批。 |
+| 防回滚 | cluster_epoch 字段骨架、nodes.attestation_epoch（第 6 章） | TPM NV counter、Attestation Service、vTPM 回滚检测。 |
+| 错误响应 | 跨租户 404/403 统一、message 通用化、等价工作量防侧信道（第 4、18 章） | 持续审查新增错误路径。 |
+| 供应链 | CI secret scan、依赖扫描、最小镜像（第 21.10 章） | SBOM、镜像签名、SLSA/构建溯源。 |
 
 ### 25.5 加固方案详细设计
 
-| 编号 | 对应攻击 | 加固方案 | 阶段 | 验收方式 |
-| --- | --- | --- | --- | --- |
-| HA-01 | BA-01 | service token 默认短 TTL；JWT 必须校验 `iss/aud/exp/nbf/kid/alg`；高权限 scope 拆分。 | P0 | 过期、错 aud、alg none、跨租户测试全部拒绝。 |
-| HA-02 | BA-02 | HMAC 签名覆盖 method、path、body hash、timestamp、nonce、node_id；nonce 窗口内唯一。 | P0 | 重放、改 body、改 path、时钟漂移测试通过。 |
-| HA-03 | BA-03 | DEK lease cache 设置 TTL、容量、用途绑定、主动撤销；panic dump 和日志禁出敏感字节。 | P0/P1 | 节点撤销后 cache 清空；敏感扫描通过。 |
-| HA-04 | BA-04 | nonce 消耗速率基线、70% 预取、90% 降载、耗尽 fail-closed、异常节点冻结。 | P0/P1 | nonce 压测和故障注入无复用。 |
-| HA-05 | BA-05 | Crypto Policy 默认签名字段；弱算法默认 decrypt-only；策略降级需审批和审计。 | P1 | 未签名策略拒绝，CBC/ECB 新加密拒绝。 |
-| HA-06 | BA-06 | DB 角色拆分；API 服务不得拥有 DDL 权限；KeyVersion 状态迁移集中在 domain 层。 | P0 | 越权 SQL 权限测试和状态机负向测试通过。 |
-| HA-07 | BA-07 | 高风险操作写本地 WAL 后再成功；P1 引入 hash chain 和锚点。 | P0/P1 | 审计不可用时高风险操作失败。 |
-| HA-08 | BA-08 | P1 引入 Attestation Service；P2 引入 epoch/NV counter 或等价防回滚机制。 | P1/P2 | 快照回滚、PCR 不匹配、旧 epoch 测试拒绝。 |
-| HA-09 | BA-09 | CI 加入 secret scan、依赖漏洞扫描、最小镜像、SBOM、镜像签名。 | P0/P2 | 构建产物可追溯，含密钥样本提交失败。 |
-| HA-10 | BA-10 | DataKey 独立 scope、租户 quota、TTL 上限、SDK 优先，直接 API 调用强审计。 | P0/P1 | 无 scope 无法调用，超 quota 被限流。 |
-| HA-11 | BA-11 | 对外错误码保持稳定但减少枚举细节；404/403 策略按租户隔离统一处理。 | P0 | 跨租户枚举无法区分 key 是否存在。 |
-| HA-12 | BA-12 | key-resolver 增加单飞请求合并、cache miss 限流、TPM 解封并发上限。 | P1 | cache miss 风暴下 TPM 解封次数受控。 |
+下表为加固方案的权威定义。与初版相比，"阶段"列已根据架构反哺结果调整：原本标注为 P1 的 HA-04、HA-07、HA-12 等项，其 P0 骨架已内嵌架构，P1 仅做深化。
+
+| 编号 | 对应攻击 | 加固方案 | 阶段 | 验收方式 | 架构落点 |
+| --- | --- | --- | --- | --- | --- |
+| HA-01 | BA-01 | service token 默认短 TTL；JWT 必须校验 `iss/aud/exp/nbf/kid/alg`；高权限 scope 拆分独立签发。 | P0 | 过期、错 aud、alg none、跨租户测试全部拒绝。 | 第 5 章 |
+| HA-02 | BA-02 | HMAC 签名覆盖 method、path、body hash、timestamp、nonce、node_id 六项；nonce 窗口内唯一；先校验时间窗再校验 nonce。 | P0 | 重放、改 body、改 path、时钟漂移测试通过。 | 第 5 章 |
+| HA-03 | BA-03 | DEK lease cache TTL/LRU/容量/撤销；panic dump 禁出敏感字节；core dump 禁用；pprof 默认关闭。 | P0 | 节点撤销后 cache 清空；敏感扫描通过；core dump 文件无密钥。 | 第 24、26 章 |
+| HA-04 | BA-04 | nonce 速率基线；FROZEN 状态；70% 预取/90% 降载/耗尽 fail-closed；异常节点冻结需手动解冻；singleflight。 | P0 骨架 + P1 完整 | nonce 压测和故障注入无复用；FROZEN 节点无法新加密。 | 第 8 章 |
+| HA-05 | BA-05 | Crypto Policy 签名字段骨架；CBC/ECB 默认 decrypt_only；降级需 approval_id；策略变更写审计。 | P0 骨架 + P1 验签 | 未签名策略 P0 接受但告警，P1 拒绝；CBC/ECB 新加密拒绝。 | 第 10 章 |
+| HA-06 | BA-06 | DB 角色五分；API 服务无 DDL；KeyVersion 状态迁移集中 domain 层；audit 表 INSERT only；crk_node_envelopes 列级权限。 | P0 | 越权 SQL 权限测试和状态机负向测试通过。 | 第 4、11、13 章 |
+| HA-07 | BA-07 | 高风险操作本地 WAL 前置；WAL 写入失败 fail-closed；WAL 回放工具；P1 哈希链 + 外部锚点。 | P0 骨架 + P1 哈希链 | 审计不可用时高风险操作失败；WAL 可回放。 | 第 15 章 |
+| HA-08 | BA-08 | cluster_epoch 字段骨架；nodes.attestation_epoch；P1 Attestation Service；P2 TPM NV counter；vTPM 回滚检测。 | P0 骨架 + P1 证明 + P2 NV counter | 快照回滚、PCR 不匹配、旧 epoch 测试拒绝。 | 第 6 章 |
+| HA-09 | BA-09 | CI secret scan、依赖漏洞扫描、最小镜像、SBOM、镜像签名。 | P0 基础 + P2 完整 | 构建产物可追溯，含密钥样本提交失败。 | 第 21.10 章 |
+| HA-10 | BA-10 | DataKey 独立 scope、租户 quota、TTL 上限 5 分钟、caller 标记、异常检测、独立审计事件。 | P0 | 无 scope 无法调用，超 quota 被限流，caller=direct 异常告警。 | 第 5、9 章 |
+| HA-11 | BA-11 | 跨租户 404/403 统一；message 通用化；等价工作量防时延侧信道；数据面/管理面错误模型一致。 | P0 | 跨租户枚举无法区分 key 是否存在；时延侧信道测试通过。 | 第 4、18 章 |
+| HA-12 | BA-12 | key-resolver singleflight；cache miss 限流；TPM 解封并发上限；DEK lease 异步预取；resolver 降级模式；跨平面调用超时。 | P0 | cache miss 风暴下 TPM 解封次数受控；resolver 降级时已签发 lease 继续生效。 | 第 26 章 |
 
 ### 25.6 分阶段加固落地
 
-| 阶段 | 必须落地的加固项 |
-| --- | --- |
-| P0 | HA-01、HA-02、HA-03、HA-04 基础版、HA-06、HA-10、HA-11。 |
-| P1 | HA-04 完整版、HA-05、HA-07、HA-08 证明准入、HA-12。 |
-| P2 | HA-08 防回滚增强、CRK 轮转、mTLS/Workload Identity、外部锚点、SBOM/镜像签名。 |
-| P3 | 多区域防回滚、跨语言 SDK conformance、安全基线自动审计、合规证据自动生成。 |
+| 阶段 | 必须落地的加固项 | 说明 |
+| --- | --- | --- |
+| P0 | HA-01、HA-02、HA-03、HA-04 骨架、HA-05 骨架、HA-06、HA-07 骨架、HA-08 骨架、HA-10、HA-11、HA-12 | 架构内嵌防御全部落地，P1 仅做深化。 |
+| P1 | HA-04 完整版、HA-05 验签、HA-07 哈希链、HA-08 Attestation Service、HA-09 基础 | 生产治理补齐。 |
+| P2 | HA-08 NV counter、CRK 轮转、mTLS/Workload Identity、外部锚点、HA-09 SBOM/镜像签名 | 高保障与规模化。 |
+| P3 | 多区域防回滚、跨语言 SDK conformance、安全基线自动审计、合规证据自动生成 | 平台化与生态化。 |
 
 ### 25.7 攻防演练要求
 
-攻防演练必须成为阶段验收的一部分，而不是上线前临时安全测试。
+攻防演练必须成为阶段验收的一部分，而不是上线前临时安全测试。演练目标是验证架构内嵌防御是否生效，而非补充缺失的防御。
 
-| 演练项 | 阶段 | 成功标准 |
-| --- | --- | --- |
-| Token 泄露模拟 | P0 | scope、租户、audience、过期时间能限制影响范围。 |
-| HMAC 重放模拟 | P0 | 同 nonce、改 body、改 path 请求均拒绝。 |
-| 数据面节点失陷模拟 | P0/P1 | 节点撤销后 DEK lease 和 nonce lease 被清理。 |
-| nonce 耗尽模拟 | P0/P1 | 新加密 fail-closed，无 nonce 复用。 |
-| DB 篡改模拟 | P1 | 状态异常被检测，审计能定位变更。 |
-| 审计删除/重排模拟 | P1 | hash chain 验证失败并告警。 |
-| vTPM 回滚模拟 | P1/P2 | 旧 epoch 或 PCR 不匹配节点无法 READY。 |
-| 供应链污染模拟 | P2 | secret scan、镜像签名或依赖扫描阻断发布。 |
+| 演练项 | 阶段 | 成功标准 | 验证防御项 |
+| --- | --- | --- | --- |
+| Token 泄露模拟 | P0 | scope、租户、audience、过期时间能限制影响范围；高权限 scope 独立签发验证。 | HA-01 |
+| HMAC 重放模拟 | P0 | 同 nonce、改 body、改 path 请求均拒绝；时间窗外请求拒绝。 | HA-02 |
+| 数据面节点失陷模拟 | P0/P1 | 节点撤销后 DEK lease 和 nonce lease 被清理；core dump 无密钥。 | HA-03 |
+| nonce 耗尽模拟 | P0/P1 | 新加密 fail-closed，无 nonce 复用；FROZEN 节点需手动解冻。 | HA-04 |
+| 策略降级模拟 | P0/P1 | CBC/ECB 新加密拒绝；降级需 approval_id；P1 未签名策略拒绝。 | HA-05 |
+| DB 篡改模拟 | P0/P1 | kv_app_rw 无法 DDL；状态异常被 domain 层拒绝；audit 表无法 UPDATE。 | HA-06 |
+| 审计删除/重排模拟 | P0/P1 | P0 WAL 回放可检测缺失；P1 hash chain 验证失败并告警。 | HA-07 |
+| vTPM 回滚模拟 | P0/P1/P2 | P0 epoch 字段存在；P1 证明失败节点无法 READY；P2 旧 NV counter 拒绝。 | HA-08 |
+| DataKey 滥用模拟 | P0 | 无 datakey:generate scope 拒绝；超 quota 限流；caller=direct 告警。 | HA-10 |
+| 错误码枚举模拟 | P0 | 跨租户 404/403 无法区分；时延侧信道无差异。 | HA-11 |
+| resolver 风暴模拟 | P0 | singleflight 合并请求；cache miss 限流生效；TPM 解封并发受控。 | HA-12 |
+| 供应链污染模拟 | P2 | secret scan、镜像签名或依赖扫描阻断发布。 | HA-09 |
 
-### 25.8 新增安全验收清单
+### 25.8 安全验收清单
 
-- [ ] 所有高权限 token 默认短 TTL，且不能跨 audience 使用。
-- [ ] HMAC 请求签名覆盖 method、path、body hash、timestamp、nonce、node_id。
-- [ ] DataKey 使用独立 scope、TTL 上限、quota 和审计事件。
+- [ ] 所有高权限 token 默认短 TTL，且不能跨 audience 使用；高权限 scope 独立签发。
+- [ ] HMAC 请求签名覆盖 method、path、body hash、timestamp、nonce、node_id 六项。
+- [ ] DataKey 使用独立 scope、TTL 上限、quota 和审计事件；caller=direct 异常告警。
 - [ ] 数据面节点撤销后，DEK lease cache、nonce lease 和本地请求能力全部失效。
-- [ ] key-resolver 有 CRK 解封并发上限和 cache miss 风暴保护。
-- [ ] Crypto Policy 降级路径有审批、审计和回滚机制。
-- [ ] 审计不可用时，高风险操作 fail-closed。
-- [ ] P1 起证明失败、epoch 过旧或 baseline 不匹配的节点不得 READY。
+- [ ] key-resolver 有 CRK 解封并发上限、singleflight 和 cache miss 风暴保护。
+- [ ] Crypto Policy 降级路径有 approval_id、审计和回滚机制；CBC/ECB 默认 decrypt_only。
+- [ ] 审计不可用时，高风险操作 fail-closed；本地 WAL 可回放。
+- [ ] DB 角色五分；API 服务无 DDL；audit 表 INSERT only；crk_node_envelopes 列级权限。
+- [ ] 状态迁移集中在 domain 层；repository 不含状态决策；非法迁移返回错误。
+- [ ] 跨租户 404/403 统一；message 通用化；时延侧信道无差异。
+- [ ] core dump 禁用；panic 零化敏感缓冲区；pprof 默认关闭。
+- [ ] cluster_epoch 字段存在；nodes.attestation_epoch 写入；P1 起证明失败、epoch 过旧或 baseline 不匹配的节点不得 READY。
 - [ ] CI/CD 至少包含 secret scan、依赖漏洞扫描和敏感日志测试。
 
 ## 26. 性能设计
@@ -2449,6 +2633,15 @@ flowchart LR
 - DEK cache 不落盘。
 - 缓存项绑定 `attestation_epoch` 或 P0 节点状态版本。
 - 缓存命中仍需检查租户、用途和 KeyVersion 状态。
+
+key-resolver 保护机制（P0 起强制，对应 HA-12）：
+
+- 单飞请求合并（singleflight）：同一 `key_version_id × purpose × suite_id` 的 DEK lease 签发请求在 resolver 侧合并，N 个并发 cache miss 只触发 1 次 CRK 解封 + DEK 解封，其余请求等待结果复用，避免 cache miss 风暴放大 TPM 压力。
+- cache miss 限流：按 `node_id` 维度限制单位时间内的 cache miss 触发的 resolver 调用次数（默认每节点每秒 N 次），超限返回 `RATE_LIMITED`，防止恶意或异常客户端耗尽 TPM 解封能力。
+- TPM 解封并发上限：CRK 解封操作全局并发上限（默认 1-2，可配置），超出排队等待，等待超时返回 `TPM_UNAVAILABLE`，避免 TPM 队列堆积导致所有解封请求超时。
+- DEK lease 预取：DEK cache 在 TTL 剩余 30% 时后台异步续租，不阻塞加密热路径；续租失败时使用未过期旧 lease 继续服务并告警，旧 lease 过期前若仍未续租成功则 fail-closed。
+- resolver 健康降级：TPM 解封失败率超过阈值（默认 10%）时，resolver 进入降级模式，拒绝新 DEK lease 签发，已签发 lease 继续生效至 TTL 到期，避免故障扩散。
+- 跨平面调用超时：数据面调用 resolver 的超时默认 2 秒，超时后数据面返回 `TPM_UNAVAILABLE`，不阻塞加密请求 goroutine。
 
 ### 26.4 压测场景
 
