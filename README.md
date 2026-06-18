@@ -565,7 +565,14 @@ P1 安全增强：
 - TPM Policy Session + AuthValue 动态绑定。
 - PolicyAuthorize 或 PolicySecret 控制恢复/轮转。
 - CRK 分片恢复，恢复材料只在隔离环境短时重组。
+- 分片恢复与 singleflight 协同：分片恢复路径绕过 singleflight 合并，但必须经过双人审批门禁、独立审计事件和速率限制，避免分片恢复被滥用绕过解封并发上限。
 - Go 内存保护可评估 `memguard` 或等价机制，但不得把它当作对内核级攻击的完整防护。
+
+P0 `cluster_epoch` 篡改感知（对应自查-1）：
+
+- `cluster_epoch` 变更必须写入独立审计事件 `cluster_epoch.changed`，包含 `old_epoch`、`new_epoch`、`trigger`（`crk_reseal`/`node_ready`/`manual`）、`operator`，事件落本地 WAL 骨架。
+- 节点 READY 时校验 `cluster_epoch` 与本地缓存的最近一次 epoch 一致，偏差超阈值触发告警并拒绝解封。
+- P1 起将 `cluster_epoch` 变更事件纳入哈希链和外部锚点，防止 DBA 权限被滥用绕过 vTPM 回滚检测。
 
 ### 6.4 DEK
 
@@ -593,6 +600,24 @@ P1/P2：
 - 节点证明结果绑定 `attestation_epoch`，证明过期或回滚时 `attestation_epoch` 与 `cluster_epoch` 偏差超阈值即撤销 lease。
 - 恢复演练验证数据库快照、CRK envelope、epoch 和审计链一致。
 - vTPM 快照回滚检测：CRK envelope 解封时校验 `cluster_epoch` 与节点当前 `attestation_epoch` 一致，旧 epoch 拒绝解封。
+
+### 6.6 宿主机安全基线检查（对应专家-3.1）
+
+vTPM 信任边界依赖宿主机和虚拟化平台，P0 阶段虽不实施完整远程证明，但必须具备基础环境健康度感知能力，作为 Attestation Service 的前置补充。
+
+P0 基线检查项（节点代理上报，管理面校验）：
+
+- SELinux/AppArmor 状态：必须为 `enforcing` 或等价强制访问控制状态。
+- 内核版本：必须在已知安全版本白名单内，禁止使用已知漏洞版本。
+- 虚拟化平台版本：libvirt/QEMU/swtpm 版本必须在受支持版本范围内。
+- TPM2-TSS 库版本：必须符合受支持版本范围，避免已知漏洞影响 NRWK 安全。
+- swtpm 进程隔离：swtpm 必须运行在独立用户/容器命名空间，不与 key-resolver 同进程。
+- 基线不符的节点拒绝进入 READY 状态，已 READY 节点基线漂移触发告警并撤销 lease。
+
+P1 升级：
+
+- 基线检查纳入 Attestation Service 自动化流程，结合 PCR 值和 Event Log 形成完整远程证明。
+- 基线数据由 Attestation Service 集中管理，支持灰度更新和回滚。
 
 ## 7. 业务优先需求拆分
 
@@ -794,6 +819,13 @@ nonce 速率治理与节点冻结（P0 起强制，对应 HA-04）：
 - nonce 区间耗尽且无新区间可用时，对应 `key_version` 在该节点的新加密全部 fail-closed，旧密文解密不受影响。
 - 单飞保护：同一 `key_version_id` 的 nonce 续租请求在 resolver 侧合并，避免 cache miss 风暴放大 TPM 压力。
 
+nonce lease 分配-使用关联监控（P0 起强制，对应自查-4）：
+
+- 分配未使用率监控：统计每个 `node_id × key_version_id` 的 nonce 区间分配量与实际加密使用量，分配未使用率持续高于阈值（默认 50%）触发告警，可能暗示实现缺陷或异常调用模式。
+- 分配-使用偏差监控：分配量与实际加密量在滚动窗口内偏差超过 3 倍标准差时告警，识别恶意消耗或客户端异常。
+- 区间回收异常监控：非优雅退出节点的未使用区间回收延迟超阈值、或已使用区间被误回收重分配时告警，避免 nonce 复用风险被掩盖。
+- 关联事件纳入 HA-04 异常检测范围，与 nonce 速率治理共用 `FROZEN` 熔断机制。
+
 ### 8.3 Envelope v1
 
 Envelope 二进制结构：
@@ -861,6 +893,13 @@ sequenceDiagram
 - P1：节点必须通过 Attestation Service 自动验证。
 - 管理/密钥面节点 READY 后才可获得 CRK node envelope。
 - 数据面节点 READY 后只能获得 DEK lease。
+
+P0 宿主机安全基线前置检查（对应专家-3.1，详见 6.6）：
+
+- 节点注册时必须上报宿主机安全基线（SELinux/AppArmor 状态、内核版本、虚拟化平台版本、TPM2-TSS 库版本、swtpm 进程隔离状态）。
+- 管理面校验基线符合白名单，基线不符的节点拒绝进入 READY 状态。
+- 节点 READY 后定期上报基线快照，基线漂移触发告警并撤销 lease。
+- 此检查作为 Attestation Service 的前置补充，P0 不依赖完整远程证明即可具备基础环境健康度感知。
 
 ### 9.2 系统引导与 CRK 初始化流程
 
@@ -1043,6 +1082,13 @@ DataKey 治理约束（P0 起强制，对应 HA-10）：
 - DataKey 接口与 `crypto:encrypt`/`crypto:decrypt` 走独立 scope 校验路径，禁止同一 token 同时持有 DataKey 和加解密 scope。
 - DataKey 调用必须记录独立审计事件 `datakey.generated`，包含 `tenant_hash`、`key_id_hash`、`purpose`、`ttl`、`caller`（`sdk`/`direct`），不记录明文。
 - 异常检测：单租户 DataKey 调用速率突增或 `caller=direct` 占比异常时触发告警，便于识别明文密钥外泄风险。
+
+DataKey 使用关联分析（P1 起强制，对应专家-3.4）：
+
+- 生成-解密配比分析：统计每个 `tenant_id × key_id` 的 DataKey 生成事件与后续 `crypto:decrypt` 事件的配比，生成量显著高于解密量（默认 5 倍以上）触发告警，可能暗示明文密钥被外泄用于离线解密。
+- 跨 IP/节点使用检测：同一 wrapped DataKey 在短时间内被多个不同 IP 或节点用于解密时告警，正常 SDK 使用模式应局限于生成时的客户端。
+- 生成后无解密事件检测：DataKey 生成后 TTL 窗口内（默认 5 分钟）无对应 `crypto:decrypt` 事件触发告警，可能暗示明文密钥被外泄或客户端实现异常。
+- 关联分析事件纳入 HA-10 异常检测范围，与 DataKey quota、caller 标记共用告警通道。
 
 ### 9.8 密钥销毁流程
 
@@ -1685,6 +1731,14 @@ current_hash = SHA256(prev_hash || canonical(event_payload) || timestamp || sequ
 | 密钥导出 wrapped key | P1 | 审批 + 同步 WAL。 |
 | 密钥销毁 | 计划状态 + 审计 | 审批 + 冷静期 + WAL。 |
 | 策略降级 | P1 | 审批 + 签名策略包。 |
+| `cluster_epoch` 变更 | 独立审计事件 `cluster_epoch.changed` + 本地 WAL 骨架 | 哈希链 + 外部锚点校验。 |
+
+`cluster_epoch` 变更审计强化（P0 起强制，对应自查-1）：
+
+- `cluster_epoch` 变更必须先写本地 WAL 骨架再提交数据库事务，WAL 写入失败则事务回滚（fail-closed）。
+- 审计事件包含 `old_epoch`、`new_epoch`、`trigger`、`operator`、`node_id`（如适用）、`crk_version`（如适用），便于回溯和异常检测。
+- P1 起将 `cluster_epoch.changed` 事件纳入哈希链，并定期与外部锚点（WORM/Object Lock）比对，防止 DBA 权限被滥用绕过 vTPM 回滚检测。
+- 异常检测：`cluster_epoch` 在短时间内频繁变更、或变更 `trigger=manual` 占比异常时告警。
 
 ## 16. 运维与恢复设计
 
@@ -1830,6 +1884,11 @@ P0 可先提供 Go SDK，封装：
 - [ ] GCM nonce 并发、崩溃、耗尽测试无复用。
 - [ ] JWT/HMAC 越权、跨租户、过期、算法混淆全部拒绝。
 - [ ] 结构化审计记录关键操作且无敏感字段。
+- [ ] Golden Test Vectors（Envelope v1、AAD Canonical、Nonce Lease）固化并作为 CI 门禁。
+- [ ] 前向兼容性测试套件覆盖未知字段、新 Suite ID、版本协商场景。
+- [ ] 宿主机安全基线检查生效，基线不符节点拒绝 READY。
+- [ ] `cluster_epoch` 变更写入独立审计事件和本地 WAL 骨架。
+- [ ] nonce lease 分配-使用关联监控生效，异常分配模式触发告警。
 
 ### 19.3 P1/P2 验收清单
 
@@ -1841,6 +1900,30 @@ P0 可先提供 Go SDK，封装：
 - [ ] CRK 轮转、节点撤销、证明撤销可清理 lease 和 envelope。
 - [ ] 策略签名包支持灰度和禁用旧算法。
 - [ ] SDK 流式加密和跨语言 Envelope 测试通过。
+
+### 19.4 Golden Test Vectors 与兼容性测试（P0 起强制，对应专家-3.3、自查-3）
+
+Envelope v1 和 AAD Canonical Format 是长期不可变的数据格式，一旦发布极难修改，必须在 P0 固化测试向量并作为 CI 门禁。
+
+Golden Test Vectors 范围：
+
+- Envelope v1 二进制格式：覆盖各 `suite_id`（AES_256_GCM、SM4_GCM、AES_256_CBC_HMAC_SHA256、SM4_CBC_HMAC_SM3）、各 `key_version`、典型 AAD、空 AAD、最大长度 AAD。
+- AAD Canonical Format：覆盖 CRK AAD（7 字段）、DEK AAD、业务 AAD 三类，包括字段顺序、编码、空值、特殊字符、超长字段。
+- Nonce Lease 协议：覆盖区间分配、续租、耗尽、回收的典型向量。
+- 测试向量以独立 JSON/二进制文件形式版本化管理，永久保留，禁止覆盖历史版本。
+
+CI 门禁要求：
+
+- 任一 SDK 或服务端实现必须通过 Golden Test Vectors 全部用例才能发布。
+- Envelope、AAD canonical、suite registry 的修改必须触发兼容性评审，新增测试向量并保留旧向量。
+- 测试向量跨语言复用，Go/Java/Python/Rust SDK 共用同一份向量集。
+
+前向兼容性测试套件：
+
+- 模拟未来字段扩展：在 Envelope 中新增未知字段（如 `aad_v2`、`flags_v2`），验证旧版 SDK/服务端能正确忽略未知字段并完成解密。
+- 模拟新 Suite ID：新增未识别的 `suite_id`，验证旧版实现按策略拒绝或降级，不崩溃。
+- 模拟版本协商：Envelope `version=2`（未来版本）的向量，验证旧版实现按 INV-08 策略可回溯解密 `version=1` 密文。
+- 前向兼容性测试向量与 Golden Test Vectors 同等管理，作为 CI 门禁。
 
 ## 20. 技术规划
 
@@ -1951,6 +2034,13 @@ P1 的技术策略是“生产治理补齐”。P1 不应推翻 P0 的 API 和�
 | SDK | Go SDK 完整封装、DataKey、本地零化 | SDK E2E、错误映射、重试策略通过。 |
 | 认证 | 管理面可选 mTLS，服务间身份增强 | 证书错误拒绝；JWT/HMAC 兼容保留。 |
 
+Attestation Service 容灾（P1 起强制，对应自查-2）：
+
+- Attestation Service 必须多副本部署，基线数据通过数据库复制或配置同步保证一致性。
+- AS 故障降级策略：AS 不可用时允许已 READY 节点基于现有证明结果续期 lease（续期窗口默认 1 小时，可配置），但拒绝新节点准入和已过期证明的节点重新 READY。
+- AS 故障期间所有证明相关操作强化审计，恢复后必须补齐证明复核，对降级期间续期的节点重新执行远程证明。
+- AS 基线数据变更必须版本化管理，支持灰度发布和回滚，避免基线错误导致全集群节点不可 READY。
+
 ### 20.7 P2 技术规划
 
 P2 的技术策略是“高保障与规模化”。重点解决高安全租户、合规业务和多节点复杂运维问题。
@@ -1975,6 +2065,13 @@ P3 的技术策略是“平台化和生态化”。此阶段要谨慎控制兼�
 | 多区域 | 区域级 CRK、策略复制、审计复制 | RTO/RPO 演练通过。 |
 | 合规证据 | 密钥生命周期、审计链、恢复报告、供应链证据 | 证据包可按租户/周期导出。 |
 | 自服务平台 | 租户门户、用量、策略、审计查询 | RBAC/ABAC 严格隔离。 |
+
+核心 Crypto Provider 内存安全增强评估（P3 评估项，对应专家-3.5）：
+
+- Go 的 GC 和运行时特性使得完全控制密钥材料内存生命周期极其困难，对金融核心等极高敏感场景存在剩余风险。
+- P3 评估将核心 Crypto Provider（CRK 解封、DEK wrap/unwrap、AAD canonical）用 Rust 重写并通过 CGO/FFI 调用，或迁移到 TEE（如 Intel SGX/TDX、AMD SEV-SNP）作为 key-resolver 的运行环境。
+- 评估维度：性能开销、部署复杂度、密钥材料隔离强度、与现有 Go 服务端的集成成本、合规认证可行性。
+- P3 仅做评估和原型验证，不作为 P0/P1 承诺；P0/P1 阶段通过短 TTL、零化、进程隔离、最小权限等机制缓解 Go 内存安全局限。
 
 ### 20.9 关键技术攻关项
 
@@ -2237,6 +2334,17 @@ flowchart TD
 4. 冻结销毁、导出、策略降级等高风险操作。
 5. 完成审计和影响范围确认后再恢复新加密。
 
+玻璃破碎应急解密通道（P0 Runbook 定义，对应专家-3.2）：
+
+当 TPM/vTPM 完全不可用且无法在可接受时间内恢复时，为避免关键业务数据不可恢复，允许通过"玻璃破碎"流程临时启用应急解密通道。
+
+- 触发条件：TPM/vTPM 物理故障、swtpm 不可恢复损坏、集群级 CRK envelope 全部不可解封，且业务影响达到预设阈值（如关键业务中断超 30 分钟）。
+- 启用流程：双人审批（至少两名授权管理员）+ 安全负责人确认 + 操作工单留痕；审批记录和操作日志纳入审计哈希链。
+- 应急密钥来源：离线备份的 CRK 分片材料（分域备份，平时不可访问），在隔离恢复环境重组后临时用于解密。
+- 操作约束：应急通道仅允许解密，禁止新加密；所有解密操作记录 `caller=break_glass` 标记，强化审计；应急通道启用期间持续告警。
+- 事后处理：TPM 恢复后立即禁用应急通道，对应急期间访问的密钥执行 CRK 轮转和 DEK 重封装，重置所有可能受影响的 lease。
+- Runbook 必须包含应急通道启用的详细步骤、审批联系人、隔离环境搭建指南和事后清理检查清单。
+
 ## 22. 横向设计总览与优化建议
 
 ### 22.1 成熟实践对齐收益
@@ -2259,6 +2367,8 @@ flowchart TD
 | Nonce 实现缺陷 | 代码 bug 可能导致重复。 | 数据库租约、KAT、并发/崩溃测试、速率监控、熔断。 |
 | 审计初期不完整 | P0 基础审计不能提供强不可篡改证明。 | P1 增加 WAL、哈希链和外部锚点。 |
 | 恢复材料集中 | 恢复材料和数据库同域可能导致灾难性泄露。 | 分域备份、审批、分片恢复、隔离演练。 |
+| Go 内存安全局限（对应专家-3.5） | Go 的 GC 不可控、panic dump 可能含密钥、goroutine 逃逸、内存复制时机不可预测，导致密钥材料（CRK/DEK 明文）在内存中驻留时间超出预期，无法完全防御内核级或同权限进程攻击。 | 短 TTL 临界区、显式零化、memguard 缓解、core dump 禁用、pprof 默认关闭、panic 零化敏感缓冲区；P3 评估 Rust 重写或 TEE 运行环境。 |
+| TPM 软件栈实现局限（对应自查-5） | swtpm 作为用户态进程，其密钥材料保护强度低于物理 TPM；TPM2-TSS 库版本漏洞可能影响 NRWK 安全；swtpm 进程被攻陷等同于 vTPM 被攻陷。 | swtpm 独立用户/容器命名空间隔离、TPM2-TSS 版本白名单、宿主机安全基线检查（6.6）、P1 评估物理 TPM 优先策略、P2 评估 HSM 替代。 |
 
 ### 22.3 优化建议
 
