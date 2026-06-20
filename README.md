@@ -345,7 +345,7 @@ P0 可以采用单二进制多模块部署，以降低部署复杂度；但代�
 
 ### 4.5 控制面/数据面隔离策略
 
-采纳专家建议，但按阶段落地：
+按阶段落地：
 
 | 阶段 | 隔离方式 | 说明 |
 | --- | --- | --- |
@@ -442,6 +442,14 @@ JWT 必校验字段（P0 起强制，对应 HA-01）：
 - `sub`/`tenant_id`：必须存在并参与 ABAC 判定。
 - `scope`：必须存在，高权限 scope（`keys:rotate`、`keys:destroy`、`nodes:manage`、`policies:manage`）必须独立签发，不得与数据面 scope 合并到同一 token。
 
+OIDC Discovery 严格校验（P0 起强制）：
+
+- 启用 OIDC 时，服务启动必须拉取并校验 issuer 的 Discovery 元数据文档（`.well-known/openid-configuration`），校验 `issuer`、`jwks_uri`、`id_token_signing_alg_values_supported` 等字段完整性，防止 issuer 配置漂移。
+- `issuer` 必须与预配置白名单精确匹配（含 scheme、path、无尾斜杠规范化），禁止通过元数据动态发现新增 issuer。
+- `jwks_uri` 必须与预配置一致或同源，禁止元数据中 `jwks_uri` 指向未授权外部域。
+- Discovery 文档拉取失败时服务拒绝启动（fail-closed），不得回退到内嵌旧文档；运行期定期复核，漂移触发告警并停止接受新 token。
+- 支持的签名算法白名单与 JWT `alg` 校验一致，元数据中出现的非白名单算法不参与协商。
+
 ### 5.2 P1/P2 认证增强
 
 | 能力 | 引入阶段 | 触发条件 |
@@ -450,6 +458,18 @@ JWT 必校验字段（P0 起强制，对应 HA-01）：
 | Workload Identity | P1 | Kubernetes 环境具备稳定 service account token 发行能力。 |
 | TPM Attestation Token | P1 | 节点准入从人工/静态注册升级为自动证明。 |
 | MFA/审批流 | P1/P2 | 导出、销毁、CRK 轮转、策略降级等高风险操作。 |
+| Token Introspection / 实时撤销 | P1 | Token 泄露后需在 TTL 窗口内即时失效。 |
+| Token Binding 到请求 IP/节点 | P1 | 防止 Token 横向迁移（P0 由 IP allowlist 缓解）。 |
+| Proof-of-Possession (DPoP) | P2 | Token 重放风险需更强缓解（P0 已由 HMAC 缓解）。 |
+
+Token 实时撤销与节点级失效（P1 起强制）：
+
+P0 的 JWT/HMAC 方案在 Token 泄露后最长 TTL 窗口内仍有效，P1 必须补齐实时撤销能力：
+
+- 在 `nodes` 表增加 `last_token_issued_at` 和 `token_fingerprint_hash` 字段，签发 service token 时记录指纹（非明文）。
+- 节点撤销时同步失效该节点已签发的 service token（类似 Vault 的 `token_accessor` 机制），撤销操作通过 outbox 异步广播到所有校验节点。
+- 高权限 scope token（`keys:rotate`、`keys:destroy`、`nodes:manage`、`policies:manage`）支持 Token Introspection：校验侧可向签发方实时查询 token 是否被撤销，TTL 仍作为兜底。
+- DPoP（P2）在 mTLS 之外叠加请求级 PoP，绑定 token 到客户端持有的私钥，进一步降低重放风险；P0/P1 由 HMAC 请求签名 + nonce 防重放缓解。
 
 ### 5.3 授权模型
 
@@ -568,7 +588,7 @@ P1 安全增强：
 - 分片恢复与 singleflight 协同：分片恢复路径绕过 singleflight 合并，但必须经过双人审批门禁、独立审计事件和速率限制，避免分片恢复被滥用绕过解封并发上限。
 - Go 内存保护可评估 `memguard` 或等价机制，但不得把它当作对内核级攻击的完整防护。
 
-P0 `cluster_epoch` 篡改感知（对应自查-1）：
+P0 `cluster_epoch` 篡改感知：
 
 - `cluster_epoch` 变更必须写入独立审计事件 `cluster_epoch.changed`，包含 `old_epoch`、`new_epoch`、`trigger`（`crk_reseal`/`node_ready`/`manual`）、`operator`，事件落本地 WAL 骨架。
 - 节点 READY 时校验 `cluster_epoch` 与本地缓存的最近一次 epoch 一致，偏差超阈值触发告警并拒绝解封。
@@ -601,7 +621,7 @@ P1/P2：
 - 恢复演练验证数据库快照、CRK envelope、epoch 和审计链一致。
 - vTPM 快照回滚检测：CRK envelope 解封时校验 `cluster_epoch` 与节点当前 `attestation_epoch` 一致，旧 epoch 拒绝解封。
 
-### 6.6 宿主机安全基线检查（对应专家-3.1）
+### 6.6 宿主机安全基线检查
 
 vTPM 信任边界依赖宿主机和虚拟化平台，P0 阶段虽不实施完整远程证明，但必须具备基础环境健康度感知能力，作为 Attestation Service 的前置补充。
 
@@ -698,6 +718,7 @@ P1 的目标是进入生产基础版：多节点可治理，关键操作可审�
 | 证明准入 | 周期复核 | READY 节点定期重新证明；失败进入 `DEGRADED` 或 `REVOKED`。 | 证明过期后不得签发新 DEK lease。 |
 | 密钥面 | CRK node envelope | 只为 READY 的管理/密钥面节点生成 CRK envelope。 | 数据面节点无 CRK envelope。 |
 | 生命周期 | lifecycle-worker | 处理轮转、销毁、缓存失效、重试、补偿任务。 | 任务幂等，崩溃后可续跑。 |
+| 生命周期 | Cryptoperiod 到期检测 | lifecycle-worker 扫描超期 ACTIVE KeyVersion，自动发轮转告警和工单。 | 超期版本不自动轮转，人工确认后执行。 |
 | 审计 | WAL | 高风险操作先写审计 WAL，再提交业务成功。 | WAL 不可用时高风险操作 fail-closed。 |
 | 审计 | 哈希链 | 审计事件包含 `prev_hash`、`current_hash`、`sequence`。 | 删除、截断、重排可检测。 |
 | 策略 | 签名策略包 | Crypto Policy 使用签名包发布，服务端验签后加载。 | 未签名或签名错误策略拒绝。 |
@@ -707,6 +728,14 @@ P1 的目标是进入生产基础版：多节点可治理，关键操作可审�
 | 恢复 | 基础恢复演练 | 在隔离环境恢复 DB、CRK envelope、策略，验证测试 DEK。 | 输出恢复报告。 |
 
 P1 的设计重点是“支撑系统持续运行”，因此必须把 outbox、worker、审计 WAL、证明状态与缓存失效打通。
+
+Cryptoperiod 工单化（P1 起强制）：
+
+- 在 `lifecycle_jobs` 中增加 `key_expiry_check` 任务类型，定期扫描 `key_versions` 中超过 `cryptoperiod` 的 ACTIVE 版本。
+- 命中超期版本后自动触发轮转工单：发通知 + 写工单记录，不自动执行轮转，避免未预期中断业务。
+- 工单进入待审批队列，人工确认后由 lifecycle-worker 执行轮转（复用 9.6 轮转流程）。
+- `cryptoperiod` 由策略定义，按 `suite_id` 和密钥用途区分；超期未处理的工单升级告警，避免长期搁置。
+- 该机制补齐 NIST SP 800-57 对密码期自动执行的要求，P0 仅有字段无自动触发，P1 起闭环。
 
 ### 7.6 P2 功能详细设计
 
@@ -722,6 +751,7 @@ P2 对齐成熟 KMS/HSM/Vault 类生产实践，强化高保障、多租户、�
 | 性能 | 容量治理 | 对 DEK lease、nonce、TPM 解封、数据库锁、审计积压做容量水位控制。 | 达到 SLO，压力测试报告可复现。 |
 | 策略 | 灰度与算法迁移 | 按租户、Key、节点池灰度新策略；旧算法进入 decrypt-only。 | 无需发版即可禁用 CBC/ECB 新加密。 |
 | 多租户 | 租户隔离增强 | 独立 quota、速率限制、策略、审计链和资源视图。 | 单租户异常不拖垮全局服务。 |
+| 多租户 | 独立 CRK 租户选项 | `tenants.crk_version_id` 绑定专属 CRK，高保障租户 DEK 由专属 CRK 封装。 | 单租户 CRK 泄露不影响其他租户 DEK。 |
 | SDK | 流式加密 | 官方 SDK 支持大对象分块认证加密。 | 分块篡改可检测，内存占用受控。 |
 | 供应链 | 构建与依赖治理 | SBOM、依赖漏洞扫描、镜像签名、最小权限镜像。 | 上线安全评审通过。 |
 
@@ -773,6 +803,15 @@ flowchart TD
 | `SM4_CBC_HMAC_SM3` | P1 | 国密兼容模式 | EtM，需策略显式允许。 |
 | `AES_ECB` / `SM4_ECB` | 仅兼容解密 | 历史兼容 | 默认禁用新加密，需审批开启。 |
 
+签名与哈希算法（P1 起支持，对接等保/密评）：
+
+| 算法 | 阶段 | 用途 | 说明 |
+| --- | --- | --- | --- |
+| `SHA-256` | P0 | AAD hash、HMAC 请求签名、审计哈希链 | 默认哈希算法。 |
+| `SM3` | P1 | AAD hash、HMAC 请求签名、审计哈希链 | 国密替代路径，与 SHA-256 平行注册，由 suite 配置选择。 |
+| `RS256` / `ES256` | P0 | JWT、策略签名包 | 默认签名算法。 |
+| `SM2` | P1 | 策略签名包、JWT 签名 | 国密非对称签名，对接 GM/T 0054 等保密评要求。 |
+
 策略原则：
 
 - 新加密默认只允许 GCM。
@@ -780,6 +819,14 @@ flowchart TD
 - ECB 不允许新加密，只能在兼容迁移期做有限解密。
 - 密文 Envelope 必须记录 `suite_id`、`mode`、`key_version`、`policy_version`。
 - 策略变更应支持旧密文解密，新密文使用新策略。
+
+国密合规对齐（P1 起）：
+
+- SM4-GCM 已在 P0 支持，符合 GM/T 0002 要求；SM2/SM3 在 P1 接入，补齐 GB/T 39786-2021 三级以上系统对非对称签名和哈希的国密算法要求。
+- SM3 作为 SHA-256 的平行替代路径，覆盖审计哈希链（`prev_hash || current_hash`）、AAD hash、HMAC 请求签名，不推翻 SHA-256 路径，仅在 `suite_registry` 中平行注册并由策略选择。
+- SM2 用于策略签名包签名与 JWT 签名，与 RS256/ES256 并存，由 issuer/策略发布方配置选择。
+- TPM DRBG 是否通过国密认证需在 P1 评估并明确记录；未通过国密认证时，国密场景的随机数来源需补充合规路径。
+- SM2/SM9 密钥协商、GM/T 0028 密码模块检测列入 P3 合规证据包，不在 P1 强制。
 
 ### 8.2 GCM Nonce
 
@@ -791,8 +838,19 @@ nonce = domain(32 bit) || counter(64 bit)
 
 | 字段 | 来源 | 说明 |
 | --- | --- | --- |
-| `domain` | KeyVersion 或节点租约分配 | 避免不同节点/版本冲突。 |
+| `domain` | KeyVersion、节点租约分配与 `cluster_epoch` 派生 | 避免不同节点/版本冲突，并使 epoch 变更后历史 domain 天然失效。 |
 | `counter` | 数据库租约区间 | 单调递增，先持久化后使用。 |
+
+domain 派生与 epoch 绑定（P0 起强制）：
+
+- `domain` 必须由 `key_version_id`、`cluster_epoch`、`node_id` 共同派生，使 domain 与 epoch 强绑定，避免 vTPM 快照回滚后旧 domain 的 counter 区间被不同节点复用。
+
+```text
+nonce_domain = truncate32(SHA256(key_version_id || cluster_epoch || node_id))
+```
+
+- epoch 变更后历史 domain 的 counter 区间天然失效，无需额外的显式回收逻辑。
+- `cluster_epoch` 取自节点 READY 时写入的快照（见 6.5），与 `nodes.cluster_epoch` 一致；epoch 不一致时拒绝解封和分配新区间。
 
 租约机制：
 
@@ -819,7 +877,7 @@ nonce 速率治理与节点冻结（P0 起强制，对应 HA-04）：
 - nonce 区间耗尽且无新区间可用时，对应 `key_version` 在该节点的新加密全部 fail-closed，旧密文解密不受影响。
 - 单飞保护：同一 `key_version_id` 的 nonce 续租请求在 resolver 侧合并，避免 cache miss 风暴放大 TPM 压力。
 
-nonce lease 分配-使用关联监控（P0 起强制，对应自查-4）：
+nonce lease 分配-使用关联监控（P0 起强制）：
 
 - 分配未使用率监控：统计每个 `node_id × key_version_id` 的 nonce 区间分配量与实际加密使用量，分配未使用率持续高于阈值（默认 50%）触发告警，可能暗示实现缺陷或异常调用模式。
 - 分配-使用偏差监控：分配量与实际加密量在滚动窗口内偏差超过 3 倍标准差时告警，识别恶意消耗或客户端异常。
@@ -851,6 +909,25 @@ AAD 规范化：
 - 必须包含 `tenant_id`、`key_id`、`key_version`、`purpose`、`suite_id`。
 - 可选包含业务上下文，如 `resource_id`、`request_id`。
 - 解密时重新计算 AAD hash，不一致则拒绝。
+
+Envelope 解析安全（P0 起强制）：
+
+解析外部输入的 Envelope 是攻击面，必须做严格长度检查，避免 parse 恐慌和越界读：
+
+- 解析前先校验最小长度（`magic + version + flags + suite + keyid_len + keyver + noncelen + aad_hash`），不足直接返回 `ErrEnvelopeInvalid`。
+- `magic` 不匹配直接拒绝，不进入后续解析。
+- 所有 length 字段（`key_id_len`、`nonce_len`）必须校验上界，超过 `maxKeyIDLen`、`maxNonceLen` 拒绝，防止分配超大缓冲或整数溢出。
+- 每次按 length 字段切片前必须校验剩余字节是否足够，不足则拒绝。
+- 解析失败一律返回统一 `ErrEnvelopeInvalid`，不区分具体阶段，避免侧信道泄露格式细节。
+- Envelope 完整解析路径必须通过模糊测试覆盖（见 19.4）。
+
+后量子密码（PQC）预留（P3 起规划，P0 预留插槽）：
+
+NIST 已于 2024 年 8 月标准化 ML-KEM、ML-DSA、SLH-DSA。为支持 5-10 年长期演进，Envelope v1 在 P0 即预留 PQC 扩展插槽，不在 P0/P1 实现：
+
+- `flags` 字段预留一个 bit 标识 PQC 模式（如 `flag_pqc_kem`），P0 固定为 0，旧版实现按非关键 flag 忽略。
+- `suite_id` 空间预留复合套件 ID，如 `ML_KEM_768_AES_256_GCM`（ML-KEM 封装 DEK + AES-256-GCM 加密数据），用于 P3 替换 RSA-OAEP 的密钥传输场景。
+- 预留插槽不改变 P0 Envelope v1 二进制布局，仅占用 `flags`/`suite_id` 编码空间，确保前向兼容。
 
 ### 8.4 指令集加速
 
@@ -894,7 +971,7 @@ sequenceDiagram
 - 管理/密钥面节点 READY 后才可获得 CRK node envelope。
 - 数据面节点 READY 后只能获得 DEK lease。
 
-P0 宿主机安全基线前置检查（对应专家-3.1，详见 6.6）：
+P0 宿主机安全基线前置检查（详见 6.6）：
 
 - 节点注册时必须上报宿主机安全基线（SELinux/AppArmor 状态、内核版本、虚拟化平台版本、TPM2-TSS 库版本、swtpm 进程隔离状态）。
 - 管理面校验基线符合白名单，基线不符的节点拒绝进入 READY 状态。
@@ -1074,6 +1151,13 @@ sequenceDiagram
 - 返回结果必须有 TTL、用途、租户、key version 绑定。
 - 日志和审计不得记录明文 DataKey。
 
+DataKey 客户端使用安全（P0 起强制，SDK 规格）：
+
+- DataKey 明文只在 `defer zeroize()` 保护的临界区内使用，离开临界区前必须零化，不得长期驻留内存。
+- 流式加密大对象分块时，每个 chunk 必须派生独立子密钥（HKDF），不得直接将 DataKey 明文重复输入 GCM chunk 加密 API，避免 DataKey 明文暴露给 chunk 加密路径。
+- 派生方式：`chunk_key = HKDF(datakey, info = key_id || key_version || chunk_index || purpose)`，每个 chunk 使用独立 nonce（由 SDK 内部计数器或服务端租约分配）。
+- DataKey 过期前 SDK 必须主动零化明文和派生子密钥，过期后拒绝继续使用。
+
 DataKey 治理约束（P0 起强制，对应 HA-10）：
 
 - DataKey 接口前置 quota 检查：按 `tenant_id` 维度限流（默认每分钟 N 次，可配置），超限返回 `429 NONCE_EXHAUSTED` 或专用 `RATE_LIMITED`。
@@ -1083,7 +1167,7 @@ DataKey 治理约束（P0 起强制，对应 HA-10）：
 - DataKey 调用必须记录独立审计事件 `datakey.generated`，包含 `tenant_hash`、`key_id_hash`、`purpose`、`ttl`、`caller`（`sdk`/`direct`），不记录明文。
 - 异常检测：单租户 DataKey 调用速率突增或 `caller=direct` 占比异常时触发告警，便于识别明文密钥外泄风险。
 
-DataKey 使用关联分析（P1 起强制，对应专家-3.4）：
+DataKey 使用关联分析（P1 起强制）：
 
 - 生成-解密配比分析：统计每个 `tenant_id × key_id` 的 DataKey 生成事件与后续 `crypto:decrypt` 事件的配比，生成量显著高于解密量（默认 5 倍以上）触发告警，可能暗示明文密钥被外泄用于离线解密。
 - 跨 IP/节点使用检测：同一 wrapped DataKey 在短时间内被多个不同 IP 或节点用于解密时告警，正常 SDK 使用模式应局限于生成时的客户端。
@@ -1139,6 +1223,14 @@ suites:
     mac: HMAC_SHA256
     composition: encrypt_then_mac
     status: decrypt_only
+  - suite_id: SM4_GCM_SM3
+    algorithm: SM4
+    key_bits: 128
+    mode: GCM
+    mac: SM3            # AAD hash 也用 SM3
+    nonce: lease_counter
+    status: active
+    compliance: [GM_T_0054]
 ```
 
 策略签名字段骨架（P0 起预留，对应 HA-05）：
@@ -1146,11 +1238,17 @@ suites:
 ```yaml
 # P0 预留字段，P1 起强制校验
 signature:
-  alg: ES256         # 签名算法，P0 可空，P1 起必填
+  alg: ES256         # 签名算法，P0 可空，P1 起必填；国密场景支持 SM2
   key_id: policy-signing-key-v1
   sig: ""            # base64 签名，P0 可空，P1 起必填
-  signed_payload_hash: ""  # 规范化策略体的 SHA-256
+  signed_payload_hash: ""  # 规范化策略体的 SHA-256；国密场景可切换 SM3
 ```
+
+签名与哈希算法注册（P1 起）：
+
+- `signature.alg` 白名单：`ES256`、`RS256`、`SM2`；`SM2` 用于国密/等保密评场景，与 `ES256`/`RS256` 并存。
+- `signed_payload_hash` 哈希算法随 `alg` 选择：`ES256`/`RS256` 用 SHA-256，`SM2` 用 SM3。
+- 哈希算法注册到 `suite_registry`，AAD hash、HMAC 请求签名、审计哈希链共用同一注册表，支持 SHA-256 与 SM3 平行切换，不推翻既有 SHA-256 路径。
 
 P0 策略安全默认值（强制）：
 
@@ -1230,6 +1328,7 @@ erDiagram
         uuid id
         string name
         string status
+        uuid crk_version_id
     }
     KEYS {
         uuid id
@@ -1263,6 +1362,12 @@ erDiagram
 | `ready_reason` | 准入依据：`static_registration`（P0）、`attestation`（P1+）。用于审计和风险分级，区分节点是凭静态注册还是凭证明进入 READY。 |
 | `attestation_epoch` | 证明纪元快照，P0 写入静态注册时的 `cluster_epoch`，P1 起由 Attestation Service 写入。 |
 | `cluster_epoch` | 节点 READY 时集群 epoch 快照，用于 vTPM 回滚检测时比对。 |
+
+`tenants` 表新增字段（P0 预留，P2 起用于高保障租户）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `crk_version_id` | 租户专属 CRK 版本引用。P0/P1 为空（租户共享集群 CRK）；P2 起高保障租户可绑定专属 CRK，将 CRK 泄露爆炸半径从全集群收敛到单租户，对标 AWS KMS per-CMK 派生模型。 |
 
 数据库角色与表权限映射（对应 HA-06，详见 4.4 部署单元）：
 
@@ -1409,6 +1514,8 @@ erDiagram
 | --- | --- | --- | --- |
 | `POST` | `/v1/crypto/encrypt` | 小对象加密 | 是 |
 | `POST` | `/v1/crypto/decrypt` | 小对象解密 | 是 |
+| `POST` | `/v1/crypto/batch-encrypt` | 批量加密（P1） | P1 |
+| `POST` | `/v1/crypto/batch-decrypt` | 批量解密（P1） | P1 |
 | `POST` | `/v1/data-keys` | 生成 DataKey | 是 |
 | `POST` | `/v1/data-keys:decrypt` | 解封 DataKey | P1 |
 
@@ -1462,6 +1569,40 @@ DataKey 响应：
   "expires_at": "2026-06-17T00:05:00Z"
 }
 ```
+
+批量加解密 API（P1）：
+
+面向业务侧批量处理场景（如导出 CSV、备份恢复），降低批量场景的请求延迟和 TLS 握手开销。
+
+```json
+// POST /v1/crypto/batch-encrypt 请求
+{
+  "tenant_id": "t-001",
+  "entries": [
+    { "key_id": "key_01H...", "plaintext": "base64...", "aad": { "resource_id": "order-1001" } },
+    { "key_id": "key_01H...", "plaintext": "base64...", "aad": { "resource_id": "order-1002" } }
+  ]
+}
+```
+
+```json
+// 批量响应（各条目独立成功/失败）
+{
+  "results": [
+    { "index": 0, "success": true, "key_version": 1, "suite_id": "AES_256_GCM", "ciphertext": "base64-envelope-v1" },
+    { "index": 1, "success": false, "error_code": "KEY_DISABLED" }
+  ]
+}
+```
+
+批量 API 设计约束：
+
+- 单次请求条目数上限默认 100，可配置；超限返回 `400 BATCH_TOO_LARGE`。
+- 服务端并行处理条目，但 nonce 区间在单事务内一次性分配，避免多次行锁竞争。
+- 响应按 `index` 对应请求条目，单条目失败不影响其他条目，整体不因部分失败回滚。
+- 批量解密同样支持，每条目独立校验 AAD、状态、权限；批量解密的异常解密检测纳入 HA-10 关联分析。
+- 批量 API 与单对象 API 共用同一 scope（`crypto:encrypt`/`crypto:decrypt`），不额外新增 scope。
+- 批量请求受单租户速率限制约束，避免单请求耗尽 nonce 区间。
 
 ### 12.4 API 调用关系图
 
@@ -1711,7 +1852,8 @@ WAL 骨架实现要求：
 ### 15.2 P1 哈希链
 
 ```text
-current_hash = SHA256(prev_hash || canonical(event_payload) || timestamp || sequence)
+current_hash = H(prev_hash || canonical(event_payload) || timestamp || sequence)
+# H 默认为 SHA-256；国密/等保密评场景可切换 SM3
 ```
 
 规则：
@@ -1720,6 +1862,8 @@ current_hash = SHA256(prev_hash || canonical(event_payload) || timestamp || sequ
 - 按租户或全局链维护 `sequence`。
 - 删除、截断、重排、篡改可由验证工具检测。
 - 每小时或按事件数发布链头到外部不可变存储。
+- 哈希算法由 `suite_registry` 选择，支持 SHA-256（默认）与 SM3（国密场景）平行路径；同一链内算法不得中途切换，切换必须开新链并记录 `chain.algorithm_changed` 事件。
+- 链头记录携带 `algorithm` 字段，验证工具按链头声明的算法校验，避免算法混淆。
 
 ### 15.3 高风险操作
 
@@ -1733,7 +1877,7 @@ current_hash = SHA256(prev_hash || canonical(event_payload) || timestamp || sequ
 | 策略降级 | P1 | 审批 + 签名策略包。 |
 | `cluster_epoch` 变更 | 独立审计事件 `cluster_epoch.changed` + 本地 WAL 骨架 | 哈希链 + 外部锚点校验。 |
 
-`cluster_epoch` 变更审计强化（P0 起强制，对应自查-1）：
+`cluster_epoch` 变更审计强化（P0 起强制）：
 
 - `cluster_epoch` 变更必须先写本地 WAL 骨架再提交数据库事务，WAL 写入失败则事务回滚（fail-closed）。
 - 审计事件包含 `old_epoch`、`new_epoch`、`trigger`、`operator`、`node_id`（如适用）、`crk_version`（如适用），便于回溯和异常检测。
@@ -1901,7 +2045,7 @@ P0 可先提供 Go SDK，封装：
 - [ ] 策略签名包支持灰度和禁用旧算法。
 - [ ] SDK 流式加密和跨语言 Envelope 测试通过。
 
-### 19.4 Golden Test Vectors 与兼容性测试（P0 起强制，对应专家-3.3、自查-3）
+### 19.4 Golden Test Vectors 与兼容性测试（P0 起强制）
 
 Envelope v1 和 AAD Canonical Format 是长期不可变的数据格式，一旦发布极难修改，必须在 P0 固化测试向量并作为 CI 门禁。
 
@@ -1924,6 +2068,14 @@ CI 门禁要求：
 - 模拟新 Suite ID：新增未识别的 `suite_id`，验证旧版实现按策略拒绝或降级，不崩溃。
 - 模拟版本协商：Envelope `version=2`（未来版本）的向量，验证旧版实现按 INV-08 策略可回溯解密 `version=1` 密文。
 - 前向兼容性测试向量与 Golden Test Vectors 同等管理，作为 CI 门禁。
+
+Envelope 模糊测试（P0 起强制）：
+
+- 使用 Go 原生 fuzzing（`testing.F`）或 `go-fuzz` 覆盖 `ParseEnvelope` 全路径，纳入 P0 测试矩阵和 CI 门禁。
+- 模糊输入来源：随机字节流、截断的合法 Envelope、length 字段越界、magic 篡改、超长 `key_id`/`nonce`、畸形 AAD hash。
+- 不变量：解析异常输入必须返回 `ErrEnvelopeInvalid`，不得 panic、不得越界读、不得分配失控缓冲。
+- 模糊测试语料库纳入版本化管理，发现的崩溃用例必须转为回归测试向量并永久保留。
+- 模糊测试覆盖与 Golden Test Vectors 同等发布门禁，未通过禁止发布。
 
 ## 20. 技术规划
 
@@ -2034,12 +2186,14 @@ P1 的技术策略是“生产治理补齐”。P1 不应推翻 P0 的 API 和�
 | SDK | Go SDK 完整封装、DataKey、本地零化 | SDK E2E、错误映射、重试策略通过。 |
 | 认证 | 管理面可选 mTLS，服务间身份增强 | 证书错误拒绝；JWT/HMAC 兼容保留。 |
 
-Attestation Service 容灾（P1 起强制，对应自查-2）：
+Attestation Service 容灾（P1 起强制）：
 
 - Attestation Service 必须多副本部署，基线数据通过数据库复制或配置同步保证一致性。
 - AS 故障降级策略：AS 不可用时允许已 READY 节点基于现有证明结果续期 lease（续期窗口默认 1 小时，可配置），但拒绝新节点准入和已过期证明的节点重新 READY。
 - AS 故障期间所有证明相关操作强化审计，恢复后必须补齐证明复核，对降级期间续期的节点重新执行远程证明。
 - AS 基线数据变更必须版本化管理，支持灰度发布和回滚，避免基线错误导致全集群节点不可 READY。
+- AS 故障累计时长超过阈值（默认 4 小时，可配置）后，已 READY 节点进入 `DEGRADED` 状态：触发告警，不自动撤销节点，但禁止向该节点分发新 CRK envelope，避免证明强度无限期退化为 P0 静态注册水平。
+- AS 恢复后设置补证明窗口（默认 2 小时内必须完成），窗口内未完成补证明的节点降级或撤销 lease。
 
 ### 20.7 P2 技术规划
 
@@ -2065,13 +2219,24 @@ P3 的技术策略是“平台化和生态化”。此阶段要谨慎控制兼�
 | 多区域 | 区域级 CRK、策略复制、审计复制 | RTO/RPO 演练通过。 |
 | 合规证据 | 密钥生命周期、审计链、恢复报告、供应链证据 | 证据包可按租户/周期导出。 |
 | 自服务平台 | 租户门户、用量、策略、审计查询 | RBAC/ABAC 严格隔离。 |
+| 后量子密码 | ML-KEM 密钥封装、PQC 套件接入 | PQC 套件通过 KAT 和兼容性测试。 |
 
-核心 Crypto Provider 内存安全增强评估（P3 评估项，对应专家-3.5）：
+核心 Crypto Provider 内存安全增强评估（P3 评估项）：
 
 - Go 的 GC 和运行时特性使得完全控制密钥材料内存生命周期极其困难，对金融核心等极高敏感场景存在剩余风险。
 - P3 评估将核心 Crypto Provider（CRK 解封、DEK wrap/unwrap、AAD canonical）用 Rust 重写并通过 CGO/FFI 调用，或迁移到 TEE（如 Intel SGX/TDX、AMD SEV-SNP）作为 key-resolver 的运行环境。
 - 评估维度：性能开销、部署复杂度、密钥材料隔离强度、与现有 Go 服务端的集成成本、合规认证可行性。
 - P3 仅做评估和原型验证，不作为 P0/P1 承诺；P0/P1 阶段通过短 TTL、零化、进程隔离、最小权限等机制缓解 Go 内存安全局限。
+
+后量子密码（PQC）路线图（P3 起规划，P0 预留插槽）：
+
+NIST 已于 2024 年 8 月正式标准化 ML-KEM（CRYSTALS-Kyber）、ML-DSA（CRYSTALS-Dilithium）、SLH-DSA（SPHINCS+），中国 GM/T 标准也在推进格基等抗量子算法。当前设计 P0/P1/P2 不实现 PQC，但必须在 P0 预留插槽并在 P3 给出明确路线：
+
+- Envelope v1 在 P0 预留 PQC 扩展插槽（`flags` bit + `suite_id` 空间，见 8.3），不改变二进制布局。
+- P3 引入 ML-KEM 替换 RSA-OAEP 用于密钥传输/封装场景（如跨区域 wrapped key 传输、外部 KMS 互联），复合套件 `ML_KEM_768_AES_256_GCM` 等通过 `suite_registry` 注册。
+- P3 评估 ML-DSA 替换策略签名包和 JWT 签名（与 SM2/ES256 并存），SLH-DSA 作为无状态签名备选。
+- PQC 算法接入必须通过 KAT、性能基准和前向兼容性测试（旧版 SDK 能忽略 PQC flag 并回退传统套件解密）。
+- PQC 路线写入 ADR-003（Envelope v1 格式）的演进附录，明确切换窗口和混合模式（传统 + PQC）过渡期策略。
 
 ### 20.9 关键技术攻关项
 
@@ -2123,10 +2288,12 @@ P3 的技术策略是“平台化和生态化”。此阶段要谨慎控制兼�
 | --- | --- |
 | ADR-001 | P0 使用 JWT/HMAC，mTLS 后续增强。 |
 | ADR-002 | TPM 只保护 CRK，不参与高频数据加解密。 |
-| ADR-003 | Envelope v1 二进制格式和 AAD canonical。 |
-| ADR-004 | GCM nonce lease 采用 `domain + counter`。 |
+| ADR-003 | Envelope v1 二进制格式和 AAD canonical；含 PQC 预留插槽与演进附录。 |
+| ADR-004 | GCM nonce lease 采用 `domain + counter`，domain 绑定 `cluster_epoch`。 |
 | ADR-005 | PostgreSQL 作为强一致元数据和租约存储。 |
 | ADR-006 | 审计从结构化事件演进到 WAL/哈希链/外部锚点。 |
+| ADR-007 | key-resolver 按 `key_id` 一致性哈希路由，failover 降级轮询。 |
+| ADR-008 | 国密 SM2/SM3 作为 SHA-256/ES256 平行路径，由 suite_registry 选择。 |
 
 ## 21. 阶段实施路线
 
@@ -2334,7 +2501,7 @@ flowchart TD
 4. 冻结销毁、导出、策略降级等高风险操作。
 5. 完成审计和影响范围确认后再恢复新加密。
 
-玻璃破碎应急解密通道（P0 Runbook 定义，对应专家-3.2）：
+玻璃破碎应急解密通道（P0 Runbook 定义）：
 
 当 TPM/vTPM 完全不可用且无法在可接受时间内恢复时，为避免关键业务数据不可恢复，允许通过"玻璃破碎"流程临时启用应急解密通道。
 
@@ -2367,16 +2534,17 @@ flowchart TD
 | Nonce 实现缺陷 | 代码 bug 可能导致重复。 | 数据库租约、KAT、并发/崩溃测试、速率监控、熔断。 |
 | 审计初期不完整 | P0 基础审计不能提供强不可篡改证明。 | P1 增加 WAL、哈希链和外部锚点。 |
 | 恢复材料集中 | 恢复材料和数据库同域可能导致灾难性泄露。 | 分域备份、审批、分片恢复、隔离演练。 |
-| Go 内存安全局限（对应专家-3.5） | Go 的 GC 不可控、panic dump 可能含密钥、goroutine 逃逸、内存复制时机不可预测，导致密钥材料（CRK/DEK 明文）在内存中驻留时间超出预期，无法完全防御内核级或同权限进程攻击。 | 短 TTL 临界区、显式零化、memguard 缓解、core dump 禁用、pprof 默认关闭、panic 零化敏感缓冲区；P3 评估 Rust 重写或 TEE 运行环境。 |
-| TPM 软件栈实现局限（对应自查-5） | swtpm 作为用户态进程，其密钥材料保护强度低于物理 TPM；TPM2-TSS 库版本漏洞可能影响 NRWK 安全；swtpm 进程被攻陷等同于 vTPM 被攻陷。 | swtpm 独立用户/容器命名空间隔离、TPM2-TSS 版本白名单、宿主机安全基线检查（6.6）、P1 评估物理 TPM 优先策略、P2 评估 HSM 替代。 |
+| Go 内存安全局限 | Go 的 GC 不可控、panic dump 可能含密钥、goroutine 逃逸、内存复制时机不可预测，导致密钥材料（CRK/DEK 明文）在内存中驻留时间超出预期，无法完全防御内核级或同权限进程攻击。 | 短 TTL 临界区、显式零化、memguard 缓解、core dump 禁用、pprof 默认关闭、panic 零化敏感缓冲区；P3 评估 Rust 重写或 TEE 运行环境。 |
+| TPM 软件栈实现局限 | swtpm 作为用户态进程，其密钥材料保护强度低于物理 TPM；TPM2-TSS 库版本漏洞可能影响 NRWK 安全；swtpm 进程被攻陷等同于 vTPM 被攻陷。 | swtpm 独立用户/容器命名空间隔离、TPM2-TSS 版本白名单、宿主机安全基线检查（6.6）、P1 评估物理 TPM 优先策略、P2 评估 HSM 替代。 |
 
 ### 22.3 优化建议
 
 | 优先级 | 建议 |
 | --- | --- |
-| P0 必须 | 数据面无 CRK/TPM；DEK 入库必封装；nonce 无复用；敏感日志脱敏；Token/JWT/HMAC 校验严格。 |
-| P1 应做 | Attestation Service 自动准入；审计 WAL/哈希链；生命周期 worker；策略签名包；双人审批。 |
-| P2 增强 | mTLS/Workload Identity；外部锚点；Recovery Runbook as Code；HSM/TEE 评估；跨语言 SDK。 |
+| P0 必须 | 数据面无 CRK/TPM；DEK 入库必封装；nonce 无复用且 domain 绑定 `cluster_epoch`；敏感日志脱敏；Token/JWT/HMAC 校验严格；OIDC Discovery 严格校验；Envelope 解析严格长度检查 + 模糊测试；CRK 临界区 `withCRK` 封装。 |
+| P1 应做 | Attestation Service 自动准入（含故障 DEGRADED 窗口）；审计 WAL/哈希链（支持 SM3）；生命周期 worker + Cryptoperiod 工单化；策略签名包（支持 SM2）；双人审批；批量加解密 API；Token Introspection/实时撤销；key-resolver 一致性哈希路由；DataKey 流式 HKDF 派生。 |
+| P2 增强 | mTLS/Workload Identity/DPoP；外部锚点；Recovery Runbook as Code；HSM/TEE 评估；跨语言 SDK；PostgreSQL 读写分离；Redis nonce 缓存；独立 CRK 租户选项。 |
+| P3 演进 | 多语言 SDK/多 Provider/多区域；PQC 路线图（ML-KEM/ML-DSA）；合规证据包；核心 Provider Rust/TEE 评估。 |
 
 ## 23. 兼容性设计
 
@@ -2499,6 +2667,27 @@ panic dump 与核心转储防护（P0 起强制，对应 HA-03）：
 - goroutine panic 被 recover 后，对应请求必须返回 `TPM_UNAVAILABLE` 或 `DB_CONFLICT`，不得继续使用可能未零化的密钥材料。
 - 堆 profile、goroutine dump、pprof 端点在 P0 默认关闭，仅在运维明确授权时通过管理 API 短时开启，且开启期间禁止执行涉及 CRK/DEK 明文的操作。
 - 内存转储工具、调试器 attach 在生产环境应被 SECCOMP 或容器安全策略禁止。
+
+CRK 临界区函数封装（P0 起强制）：
+
+CRK 明文不得作为 `[]byte` 在调用栈中自由传递，必须在受控函数作用域内使用并强制 defer 零化。key-resolver 必须采用 `withCRK` 模式封装解封-使用-零化生命周期：
+
+```go
+// 只在受控函数内使用 CRK 明文，defer 零化，禁止把 crk 传给外部函数后保留引用
+func (r *Resolver) withCRK(ctx context.Context, env CRKEnvelope, fn func([]byte) error) error {
+    crk, err := r.unseal(ctx, env)
+    if err != nil {
+        return err
+    }
+    defer func() { cryptobuf.Zeroize(crk) }()
+    return fn(crk)
+}
+```
+
+- 禁止把 CRK 明文 slice 传给不受控的外部函数后再 `runtime.KeepAlive`，外部函数可能持有 slice header 导致零化失效。
+- `crypto/aes.NewCipher` 内部会复制 key 到自身结构体，调用后零化原 `crk` slice 不能清除 cipher 内部副本；cipher 对象使用后必须显式置 nil 并尽快离开作用域，P1/P2 评估 `memguard.LockedBuffer` 缓解。
+- CRK 临界区不得跨越数据库事务边界，避免事务 retry 时 CRK 明文被多次暴露（见 9.6 轮转流程、11.3 事务规则）。
+- `net/http/pprof` 在 key-resolver 进程默认关闭，pprof heap dump 会包含 goroutine stack，可能含密钥材料。
 
 ### 24.5 安全边界图
 
@@ -2855,6 +3044,24 @@ HA 设计要点：
 - PostgreSQL 是强一致核心状态，需 HA、备份、恢复演练。
 - worker 通过数据库 lease 或 advisory lock 避免重复执行。
 - audit-forwarder 可多副本，但事件顺序和 hash chain 由数据库 sequence 或链头锁控制。
+
+Key Resolver 路由策略（P1 起明确）：
+
+HA 拓扑中 key-resolver 多副本，调用方（management-api、crypto-api）路由到特定 resolver 的策略必须明确，避免 cache miss 时每次 TPM 解封落在不同节点、无法复用 CRK 明文临界区缓存。
+
+- 推荐按 `key_id` 一致性哈希路由：相同 `key_id` 的请求路由到同一 resolver，DEK 明文短暂复用，减少 TPM 解封频率。
+- 配合 resolver 健康检查和自动 failover：节点故障时该 `key_id` 的请求降级到其他副本（轮询），failover 期间接受短暂 TPM 解封放大，恢复后回切一致性哈希。
+- 路由策略写入 ADR，作为 key-resolver 客户端负载均衡的统一约束。
+- 轮询仅作为 failover 降级路径，不作为常态路由策略，避免 CRK 临界区缓存失效。
+
+PostgreSQL 读写分离与热点治理（P2 起）：
+
+当前 HA 拓扑所有组件写 PostgreSQL Primary，高并发下 nonce 区间分配（行锁）、DEK lease 签发（cache miss 同步写）、高风险审计 WAL 写入可能形成热点。
+
+- P2 引入 PostgreSQL 只读副本：密钥元数据查询（`GET /v1/keys`）、策略查询等高频只读操作路由到只读副本，写操作仍走 Primary。
+- nonce lease 的 `used_counter` 更新可采用批量提交模式：本地计数器每隔 N 次或达阈值才回写 PG，减少行锁频率，需配合 crash-recovery 逻辑保证崩溃时已用区间不丢失。
+- P2 评估引入 Redis（AOF 持久化）承接高频 nonce 使用计数，低频区间分配仍走 PG；Redis 故障时 fail-closed，禁止 fallback 到允许 nonce 重用。
+- 只读副本延迟必须监控，延迟超阈值时只读查询回退到 Primary，避免读到过期密钥状态。
 
 ## 28. 可观测性与运维设计
 
