@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kvlt/key-vault/internal/api/admin"
@@ -14,6 +15,7 @@ import (
 	"github.com/kvlt/key-vault/internal/auth/jwt"
 	"github.com/kvlt/key-vault/internal/auth/principal"
 	"github.com/kvlt/key-vault/internal/config"
+	"github.com/kvlt/key-vault/internal/web"
 )
 
 // Server is the HTTP server.
@@ -43,6 +45,8 @@ func New(deps Deps) *Server {
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	// Embedded frontend SPA.
+	mux.Handle("GET /ui/", http.StripPrefix("/ui", web.Handler()))
 
 	// Auth config.
 	authCfg := middleware.AuthConfig{
@@ -57,10 +61,10 @@ func New(deps Deps) *Server {
 	// ReadBody MUST run before Auth so the body is in context for HMAC verification.
 	var handler http.Handler = mux
 	authMiddleware := middleware.Auth(authCfg)
-	// Wrap auth so healthz bypasses authentication.
+	// Wrap auth so healthz and /ui/ bypass authentication.
 	authWrapper := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
+			if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/ui/") {
 				h.ServeHTTP(w, r)
 				return
 			}

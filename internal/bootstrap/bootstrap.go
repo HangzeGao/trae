@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/kvlt/key-vault/internal/api/admin"
@@ -123,8 +124,45 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) {
 		NonceManager:  nonceMgr,
 		JWTVerifier:   jwtVerifier,
 		HMACVerifier:  hmacVerifier,
-		StaticTokens:  make(map[string]*principal.Principal),
+		StaticTokens:  loadStaticTokens(),
 	}, nil
+}
+
+// loadStaticTokens reads static token → principal mappings from the
+// KVLT_STATIC_TOKENS env var (JSON array of {token, principal} objects).
+// This is a P0 convenience for development/demo. In production, use JWT/HMAC.
+func loadStaticTokens() map[string]*principal.Principal {
+	tokens := make(map[string]*principal.Principal)
+	raw := os.Getenv("KVLT_STATIC_TOKENS")
+	if raw == "" {
+		return tokens
+	}
+	var entries []struct {
+		Token    string   `json:"token"`
+		TenantID string   `json:"tenant_id"`
+		Scopes   []string `json:"scopes"`
+		Roles    []string `json:"roles"`
+		Plane    string   `json:"plane"`
+		NodeID   string   `json:"node_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return tokens
+	}
+	for _, e := range entries {
+		plane := principal.PlaneManagement
+		if e.Plane == "data" {
+			plane = principal.PlaneData
+		}
+		tokens[e.Token] = &principal.Principal{
+			ID:       "static:" + e.Token[:8],
+			TenantID: e.TenantID,
+			Scopes:   e.Scopes,
+			Roles:    e.Roles,
+			Plane:    plane,
+			NodeID:   e.NodeID,
+		}
+	}
+	return tokens
 }
 
 // bootstrapCluster creates the default tenant, NRWK, CRK, and CRK envelope.
