@@ -331,10 +331,10 @@ P0 可以采用单二进制多模块部署，以降低部署复杂度；但代�
 
 | DB 角色 | 权限范围 | 使用方 | 禁止权限 |
 | --- | --- | --- | --- |
-| `kv_app_rw` | `keys`、`key_versions`、`dek_leases`、`nonce_leases`、`outbox_events`、`audit_events`、`idempotency_keys` 的 DML | management-api、crypto-api、key-resolver | 任何 DDL、`crk_node_envelopes` 明文列直读 |
-| `kv_resolver_rw` | `crk_node_envelopes`、`crk_versions` 的 DML | key-resolver 专用 | DDL、跨平面表写权限 |
+| `kv_app_rw` | `keys`、`key_versions`、`dek_leases`、`nonce_leases`、`outbox_events`、`idempotency_keys` 的最小 DML；`audit_events` 仅 INSERT | management-api、crypto-api | 任何 DDL、`crk_node_envelopes` 明文列直读、`audit_events` UPDATE/DELETE |
+| `kv_resolver_rw` | `crk_node_envelopes`、`crk_versions` 的最小 DML；`dek_leases` 和 `audit_events` 仅所需 SELECT/INSERT | key-resolver 专用 | DDL、管理面状态表写、`audit_events` UPDATE/DELETE |
 | `kv_worker_rw` | `lifecycle_jobs`、`outbox_events` 消费标记 | lifecycle-worker | DDL、密钥材料表写 |
-| `kv_audit_w` | `audit_events`、`audit_chain_heads` 追加写 | audit-forwarder | UPDATE/DELETE、其他表 |
+| `kv_audit_w` | `audit_events` 只读；`audit_chain_heads` 仅 INSERT | audit-forwarder | UPDATE/DELETE、业务表写 |
 | `kv_migrate` | 全部 DDL | 迁移工具独立凭证，仅在迁移窗口启用 | 常驻运行时禁用 |
 
 约束：
@@ -419,8 +419,8 @@ HMAC 签名覆盖要求（P0 起强制，对应 HA-02）：
 
 - 签名必须覆盖 `method`、`path`、`sha256(body)`、`timestamp`、`nonce`、`node_id` 全部六项，缺一拒绝。
 - `sha256(body)` 必须基于规范化后的请求体计算，禁止仅签名 URI 而忽略 body。
-- `nonce` 必须在 `timestamp ± 300s` 窗口内全局唯一，存储窗口至少覆盖 2 倍时间偏差。
-- 服务端必须先校验 `timestamp` 窗口，再校验 `nonce` 唯一性，最后校验签名，避免 nonce 存储被无效请求污染。
+- `nonce` 必须在 `timestamp ± 300s` 窗口内按 `credential_id`（或不可变 `node_id`）唯一，存储窗口至少覆盖 2 倍时间偏差；不得以全局 nonce 命名空间造成跨调用方拒绝服务。
+- 服务端必须先校验 `timestamp` 窗口和请求字段长度，再校验签名；签名通过后，才以原子「插入成功即占用」方式登记 `(credential_id, nonce)`。重复插入即拒绝。不得在验签前持久化 nonce，否则攻击者可抢占 nonce 阻断合法请求。
 - GET 请求 body 为空时 `sha256(body)` 使用空字节串的哈希固定值。
 
 服务端校验要求：
@@ -489,7 +489,7 @@ P0 的 JWT/HMAC 方案在 Token 泄露后最长 TTL 窗口内仍有效，P1 必�
 
 ABAC 约束：
 
-- `tenant_id` 必须匹配。
+- 租户必须以已认证主体中的不可变 `tenant_id`/workload identity 为准；客户端请求体中的 `tenant_id` 仅作一致性断言，缺失时由服务端注入，不一致时拒绝。禁止以请求体字段决定授权租户、限流租户或审计租户。
 - `key_id` 必须属于当前租户或当前业务域。
 - 管理 API 禁止由数据面 service token 调用。
 - 高风险操作必须检查 `approval_id` 或二次确认状态。
@@ -498,7 +498,7 @@ DataKey 专项约束（P0 起强制，对应 HA-10）：
 
 - `datakey:generate` 必须独立签发，不得与 `crypto:encrypt`/`crypto:decrypt` 合并到同一 scope 集合，降低 token 泄露后的明文密钥外泄面。
 - DataKey 接口必须按租户配置 quota（默认每租户每分钟 N 次，可配置），超 quota 返回 `429`。
-- DataKey 明文 TTL 上限默认 5 分钟，禁止配置超过 15 分钟；TTL 必须在响应中显式返回。
+- DataKey 响应的时间字段仅表示 SDK 的本地零化截止时间（默认 5 分钟、最大 15 分钟），不是服务端可强制执行的密码学失效时间；字段应命名为 `client_zeroize_by`，并在 SDK 中强制到期拒用和零化。
 - DataKey 接口必须记录独立审计事件，包含 `tenant_hash`、`key_id_hash`、`purpose`、`ttl`、`request_id`，不记录明文。
 - 直接 API 调用 DataKey（非 SDK）必须标记 `caller=direct`，便于异常解密检测时优先审查。
 
@@ -676,7 +676,7 @@ P1 升级：
 | 阶段 | 阶段目标 | 服务对象 | 核心判断 |
 | --- | --- | --- | --- |
 | P0：业务 MVP | 让业务可以安全完成密钥创建、加密、解密、轮转和 DataKey 使用。 | 内部可信业务、试点租户。 | 能否在受控环境跑通端到端业务闭环，并守住 CRK/DEK/nonce 安全底线。 |
-| P1：生产基础版 | 让系统具备生产可运维、可审计、可证明、可恢复的基础能力。 | 多业务租户、生产集群。 | 能否在多节点、故障、审计、撤销和策略变化下稳定运行。 |
+| P1：生产基础版 | 让系统具备生产可运维、可审计、可证明、可恢复的基础能力。 | 内部多业务租户、生产集群。 | 能否在多节点、故障、审计、撤销和策略变化下稳定运行；共享集群 CRK 仅适用于同一风险域。 |
 | P2：高保障增强版 | 对齐云 KMS、Vault Enterprise、HSM/KMS 类成熟治理能力。 | 高安全租户、合规业务、跨集群部署。 | 能否满足强身份、强审计、灾备演练、算法迁移和容量治理要求。 |
 | P3：平台生态版 | 形成标准化 KMS 平台、SDK 生态和跨环境兼容能力。 | 企业平台团队、外部系统、跨语言应用。 | 能否作为组织级密钥服务长期演进，支持多区域、多语言、多合规基线。 |
 
@@ -865,8 +865,8 @@ nonce_domain = truncate32(SHA256(key_version_id || cluster_epoch || node_id))
 
 - nonce 消耗速率突增触发告警。
 - 单节点异常消耗可冻结其新加密能力。
-- 节点优雅退出时释放未使用区间。
-- 非优雅退出依赖 TTL 或心跳超时回收，已使用区间不得再分配。
+- 无论节点是否优雅退出，已分配的 nonce 区间均必须永久作废（burn），不得释放、回收或重新分配。进程崩溃、计数器回写滞后和并发请求会使「未使用」无法被可靠证明；以可用性换取 AEAD nonce 唯一性是不可接受的。
+- TTL 或心跳超时仅用于回收租约记录、容量统计和阻止该节点继续使用，绝不能使对应计数区间重新可分配。
 
 nonce 速率治理与节点冻结（P0 起强制，对应 HA-04）：
 
@@ -881,7 +881,7 @@ nonce lease 分配-使用关联监控（P0 起强制）：
 
 - 分配未使用率监控：统计每个 `node_id × key_version_id` 的 nonce 区间分配量与实际加密使用量，分配未使用率持续高于阈值（默认 50%）触发告警，可能暗示实现缺陷或异常调用模式。
 - 分配-使用偏差监控：分配量与实际加密量在滚动窗口内偏差超过 3 倍标准差时告警，识别恶意消耗或客户端异常。
-- 区间回收异常监控：非优雅退出节点的未使用区间回收延迟超阈值、或已使用区间被误回收重分配时告警，避免 nonce 复用风险被掩盖。
+- 区间终结异常监控：非优雅退出节点的租约终结/作废记录延迟超阈值、或任一已分配区间被尝试重分配时立即告警。区间只能作废，不能回收复用。
 - 关联事件纳入 HA-04 异常检测范围，与 nonce 速率治理共用 `FROZEN` 熔断机制。
 
 ### 8.3 Envelope v1
@@ -896,27 +896,30 @@ Envelope 二进制结构：
 | `suite_id` | uint16 | 算法套件。 |
 | `key_id_len` | uint16 | Key ID 长度。 |
 | `key_version` | uint32 | 密钥版本号。 |
+| `policy_version` | uint32 | 产生该密文时的策略版本。 |
 | `nonce_len` | uint8 | nonce 长度。 |
+| `tag_len` | uint8 | AEAD tag 或 MAC 长度，必须与 suite 的固定定义一致。 |
+| `ciphertext_len` | uint64 | 密文长度；用于无歧义边界检查和拒绝超限输入。 |
 | `aad_hash` | 32 bytes | 规范化 AAD 的 SHA-256。 |
 | `key_id` | bytes | UTF-8 或 UUID bytes。 |
 | `nonce` | bytes | GCM nonce 或 CBC IV。 |
 | `ciphertext` | bytes | 密文。 |
 | `tag` | bytes | AEAD tag 或 MAC。 |
 
-AAD 规范化：
+AAD 规范化与认证：
 
-- 使用稳定 JSON canonical encoding 或二进制 TLV。
-- 必须包含 `tenant_id`、`key_id`、`key_version`、`purpose`、`suite_id`。
-- 可选包含业务上下文，如 `resource_id`、`request_id`。
-- 解密时重新计算 AAD hash，不一致则拒绝。
+- P0 固定使用一种规范化编码（推荐确定性 TLV）；不得让 SDK 或调用方在 JSON canonicalization 与 TLV 之间自行选择。编码必须具有明确的字段编号、UTF-8/字节串规则、最大长度和重复字段拒绝规则，并固化为测试向量。
+- AEAD 的实际 AAD 必须是 `"kvlt-envelope-v1" || canonical(protected_header) || canonical(caller_aad)`。`protected_header` 至少包含 magic、version、flags、suite_id、key_id、key_version、policy_version、nonce 和所有长度字段；派生字段 `aad_hash` 不纳入自身的 AAD 编码，但必须等于 `hash(canonical(caller_aad))`。不得仅认证 `aad_hash`，否则 Envelope 头部可被篡改或产生解析歧义。
+- `caller_aad` 必须包含 `tenant_id`、`key_id`、`key_version`、`purpose`、`suite_id`；可选包含业务上下文如 `resource_id`。`request_id` 不应作为默认 AAD 字段，以免业务重试或异步读取时不可解密。
+- `aad_hash` 仅用作快速一致性检查和诊断索引；解密必须重建完整 AAD 并依赖 AEAD/MAC 验证，不得把哈希比较当作认证替代。
 
 Envelope 解析安全（P0 起强制）：
 
 解析外部输入的 Envelope 是攻击面，必须做严格长度检查，避免 parse 恐慌和越界读：
 
-- 解析前先校验最小长度（`magic + version + flags + suite + keyid_len + keyver + noncelen + aad_hash`），不足直接返回 `ErrEnvelopeInvalid`。
+- 解析前先校验 v1 固定头部最小长度（含 `policy_version`、`tag_len`、`ciphertext_len` 与 `aad_hash`），不足直接返回 `ErrEnvelopeInvalid`。
 - `magic` 不匹配直接拒绝，不进入后续解析。
-- 所有 length 字段（`key_id_len`、`nonce_len`）必须校验上界，超过 `maxKeyIDLen`、`maxNonceLen` 拒绝，防止分配超大缓冲或整数溢出。
+- 所有 length 字段（`key_id_len`、`nonce_len`、`tag_len`、`ciphertext_len`）必须校验 suite 对应的固定值及全局上界；使用溢出安全的加法检查总长度，超过 `maxKeyIDLen`、`maxNonceLen`、`maxCiphertextLen` 或产生尾随字节时拒绝。
 - 每次按 length 字段切片前必须校验剩余字节是否足够，不足则拒绝。
 - 解析失败一律返回统一 `ErrEnvelopeInvalid`，不区分具体阶段，避免侧信道泄露格式细节。
 - Envelope 完整解析路径必须通过模糊测试覆盖（见 19.4）。
@@ -925,7 +928,7 @@ Envelope 解析安全（P0 起强制）：
 
 NIST 已于 2024 年 8 月标准化 ML-KEM、ML-DSA、SLH-DSA。为支持 5-10 年长期演进，Envelope v1 在 P0 即预留 PQC 扩展插槽，不在 P0/P1 实现：
 
-- `flags` 字段预留一个 bit 标识 PQC 模式（如 `flag_pqc_kem`），P0 固定为 0，旧版实现按非关键 flag 忽略。
+- `flags` 字段预留一个 bit 标识 PQC 模式（如 `flag_pqc_kem`），P0 固定为 0；v1 实现必须拒绝未知或保留 flag，不能静默忽略安全语义未知的扩展。
 - `suite_id` 空间预留复合套件 ID，如 `ML_KEM_768_AES_256_GCM`（ML-KEM 封装 DEK + AES-256-GCM 加密数据），用于 P3 替换 RSA-OAEP 的密钥传输场景。
 - 预留插槽不改变 P0 Envelope v1 二进制布局，仅占用 `flags`/`suite_id` 编码空间，确保前向兼容。
 
@@ -997,6 +1000,8 @@ flowchart TD
 
 - 引导只允许在初始化窗口执行。
 - 初始化操作必须幂等，重复执行不得生成多个当前 CRK。
+- 初始化必须是受控的 bootstrap ceremony：使用数据库 advisory lock/可串行化事务取得唯一初始化权；初始化记录必须包含 `cluster_id`、初始 CRK 版本、目标管理节点的 NRWK Name、操作者和时间，并写入高风险 WAL。多副本部署不得依据“当前未读到 CRK”自行生成根密钥。
+- 在生产或多管理员环境，首次初始化、为新节点签发 CRK envelope、以及恢复路径必须经过独立审批/带外节点注册校验；仅凭可在线申请的 service token 不得获得 CRK envelope。
 - CRK envelope 绑定节点、角色、策略和 NRWK Name。
 - 数据面节点不参与 CRK 初始化。
 
@@ -1135,12 +1140,12 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     SDK->>API: POST /v1/data-keys
-    API->>API: 认证、scope、purpose、TTL 校验
+    API->>API: 认证、scope、purpose、client_zeroize_by 校验
     API->>KR: GenerateDataKey(key_id, policy)
     KR->>DB: 查询 key/current version
     KR->>KR: 生成 data_key 明文
-    KR->>KR: 使用 DEK/CRK 策略封装 data_key
-    KR-->>API: plaintext_data_key, wrapped_data_key, expires_at
+    KR->>KR: 使用指定 KeyVersion 的 DEK 封装 data_key
+    KR-->>API: plaintext_data_key, wrapped_data_key, client_zeroize_by
     API-->>SDK: 返回 DataKey
     SDK->>SDK: 本地流式加密，用后零化 plaintext_data_key
 ```
@@ -1148,30 +1153,31 @@ sequenceDiagram
 限制：
 
 - DataKey 明文只面向受控业务服务或官方 SDK。
-- 返回结果必须有 TTL、用途、租户、key version 绑定。
+- `wrapped_data_key` 必须是自描述且经认证的 DataKey envelope，绑定 `tenant_id`、`key_id`、`key_version`、`purpose`、DataKey suite、调用方提供的 encryption context 及其版本；只能由同一逻辑 Key 的对应 KeyVersion 解封。禁止使用 CRK 直接封装业务 DataKey，避免绕过 KeyVersion 生命周期、用途约束和轮转审计。
+- 返回结果必须有用途、租户、key version 和 `client_zeroize_by` 绑定。该时间只约束官方 SDK 的本地内存生命周期，不表示已交付到调用方的明文可被服务端远程失效。
 - 日志和审计不得记录明文 DataKey。
 
 DataKey 客户端使用安全（P0 起强制，SDK 规格）：
 
 - DataKey 明文只在 `defer zeroize()` 保护的临界区内使用，离开临界区前必须零化，不得长期驻留内存。
-- 流式加密大对象分块时，每个 chunk 必须派生独立子密钥（HKDF），不得直接将 DataKey 明文重复输入 GCM chunk 加密 API，避免 DataKey 明文暴露给 chunk 加密路径。
-- 派生方式：`chunk_key = HKDF(datakey, info = key_id || key_version || chunk_index || purpose)`，每个 chunk 使用独立 nonce（由 SDK 内部计数器或服务端租约分配）。
-- DataKey 过期前 SDK 必须主动零化明文和派生子密钥，过期后拒绝继续使用。
+- 流式加密大对象时，官方 SDK 必须为每个逻辑对象新生成一个 DataKey；不得跨对象复用 DataKey。每个 chunk 必须派生独立子密钥（HKDF），不得直接将 DataKey 明文重复输入 GCM chunk 加密 API。
+- 对象头必须携带并认证一个 128-bit 随机 `object_salt`。派生方式固定为 `chunk_key = HKDF-Expand(HKDF-Extract(object_salt, datakey), info = "kvlt-chunk-v1" || key_id || key_version || purpose || chunk_index)`；每个 chunk 使用由 `chunk_index` 编码的 96-bit nonce。SDK 必须限制 chunk 总数使计数器不回绕。服务端 nonce lease 只用于服务端以 KeyVersion DEK 加密的场景，不得与客户端 DataKey 流式加密共用。
+- 到达 `client_zeroize_by` 前 SDK 必须主动零化明文和派生子密钥；到达该时间后拒绝继续使用。该本地约束不能替代调用方进程、主机或内存被攻陷时的防护。
 
 DataKey 治理约束（P0 起强制，对应 HA-10）：
 
 - DataKey 接口前置 quota 检查：按 `tenant_id` 维度限流（默认每分钟 N 次，可配置），超限返回 `429 NONCE_EXHAUSTED` 或专用 `RATE_LIMITED`。
-- DataKey 明文 TTL 上限默认 5 分钟，最大不超过 15 分钟；请求中 `ttl` 超过上限自动截断并告警。
-- DataKey 响应必须包含 `key_id`、`key_version`、`suite_id`、`expires_at`、`purpose`，便于 SDK 在过期前主动零化。
+- DataKey 的 `client_zeroize_by` 默认 5 分钟、最大不超过 15 分钟；请求中建议时长超过上限必须返回参数错误，而不是静默截断，避免客户端对实际生命周期产生错误假设。
+- DataKey 响应必须包含 `key_id`、`key_version`、`suite_id`、`client_zeroize_by`、`purpose` 和绑定的 encryption-context 摘要，便于 SDK 到期拒用并零化。
 - DataKey 接口与 `crypto:encrypt`/`crypto:decrypt` 走独立 scope 校验路径，禁止同一 token 同时持有 DataKey 和加解密 scope。
-- DataKey 调用必须记录独立审计事件 `datakey.generated`，包含 `tenant_hash`、`key_id_hash`、`purpose`、`ttl`、`caller`（`sdk`/`direct`），不记录明文。
+- DataKey 调用必须记录独立审计事件 `datakey.generated`，包含 `tenant_hash`、`key_id_hash`、`purpose`、`zeroize_window`、`caller`（`sdk`/`direct`），不记录明文。
 - 异常检测：单租户 DataKey 调用速率突增或 `caller=direct` 占比异常时触发告警，便于识别明文密钥外泄风险。
 
 DataKey 使用关联分析（P1 起强制）：
 
-- 生成-解密配比分析：统计每个 `tenant_id × key_id` 的 DataKey 生成事件与后续 `crypto:decrypt` 事件的配比，生成量显著高于解密量（默认 5 倍以上）触发告警，可能暗示明文密钥被外泄用于离线解密。
+- 生成-解封配比分析：仅对使用 `POST /v1/data-keys:decrypt` 的服务端解封模式，统计每个 `tenant_id × key_id` 的生成与解封配比并作为异常信号；不得把客户端本地信封加密的正常零服务端解封模式判为异常。
 - 跨 IP/节点使用检测：同一 wrapped DataKey 在短时间内被多个不同 IP 或节点用于解密时告警，正常 SDK 使用模式应局限于生成时的客户端。
-- 生成后无解密事件检测：DataKey 生成后 TTL 窗口内（默认 5 分钟）无对应 `crypto:decrypt` 事件触发告警，可能暗示明文密钥被外泄或客户端实现异常。
+- 不得把「生成后未出现服务端解封事件」作为默认泄露信号：正常客户端信封加密可永远不调用服务端解封。异常检测应基于 DataKey 生成速率、调用主体/网络位置漂移、以及同一 `wrapped_data_key` 的异常解封模式。
 - 关联分析事件纳入 HA-10 异常检测范围，与 DataKey quota、caller 标记共用告警通道。
 
 ### 9.8 密钥销毁流程
@@ -1223,11 +1229,10 @@ suites:
     mac: HMAC_SHA256
     composition: encrypt_then_mac
     status: decrypt_only
-  - suite_id: SM4_GCM_SM3
+  - suite_id: SM4_GCM
     algorithm: SM4
     key_bits: 128
     mode: GCM
-    mac: SM3            # AAD hash 也用 SM3
     nonce: lease_counter
     status: active
     compliance: [GM_T_0054]
@@ -1248,7 +1253,7 @@ signature:
 
 - `signature.alg` 白名单：`ES256`、`RS256`、`SM2`；`SM2` 用于国密/等保密评场景，与 `ES256`/`RS256` 并存。
 - `signed_payload_hash` 哈希算法随 `alg` 选择：`ES256`/`RS256` 用 SHA-256，`SM2` 用 SM3。
-- 哈希算法注册到 `suite_registry`，AAD hash、HMAC 请求签名、审计哈希链共用同一注册表，支持 SHA-256 与 SM3 平行切换，不推翻既有 SHA-256 路径。
+- 哈希算法注册到 `suite_registry`，策略签名、请求签名和审计哈希链按各自独立的算法标识选择 SHA-256 或 SM3；GCM 的认证标签始终是 GCM/GMAC 定义的一部分，SM3 不能被标记为 `SM4-GCM` 的 MAC。
 
 P0 策略安全默认值（强制）：
 
@@ -1363,11 +1368,11 @@ erDiagram
 | `attestation_epoch` | 证明纪元快照，P0 写入静态注册时的 `cluster_epoch`，P1 起由 Attestation Service 写入。 |
 | `cluster_epoch` | 节点 READY 时集群 epoch 快照，用于 vTPM 回滚检测时比对。 |
 
-`tenants` 表新增字段（P0 预留，P2 起用于高保障租户）：
+`tenants` 表新增字段（P0 预留；相互隔离的生产租户上线前必须启用）：
 
 | 字段 | 说明 |
 | --- | --- |
-| `crk_version_id` | 租户专属 CRK 版本引用。P0/P1 为空（租户共享集群 CRK）；P2 起高保障租户可绑定专属 CRK，将 CRK 泄露爆炸半径从全集群收敛到单租户，对标 AWS KMS per-CMK 派生模型。 |
+| `crk_version_id` | 租户专属 CRK/tenant KEK 版本引用。P0 可为空，但仅限单租户或同一风险域试点；面向相互隔离的生产租户时必须在上线前启用每租户独立 KEK（可由集群根在受控 KDF/封装域中派生），而非把共享集群 CRK 作为长期默认。这样可将管理/密钥面失陷的密钥材料爆炸半径收敛到单租户，并支持独立轮转、吊销和审计。 |
 
 数据库角色与表权限映射（对应 HA-06，详见 4.4 部署单元）：
 
@@ -1378,7 +1383,8 @@ erDiagram
 | `dek_leases`、`nonce_leases` | RW | RW | R | — |
 | `nodes` | RW | R | R | — |
 | `crypto_policies` | R | R | R | — |
-| `audit_events`、`audit_chain_heads` | — | — | — | INSERT only |
+| `audit_events` | INSERT only | INSERT only | R | SELECT only |
+| `audit_chain_heads` | — | — | — | INSERT only |
 | `outbox_events` | RW | — | RW（消费标记） | — |
 | `lifecycle_jobs` | — | — | RW | — |
 | `idempotency_keys` | RW | — | — | — |
@@ -1447,8 +1453,10 @@ erDiagram
 
 - 协议：HTTPS JSON REST。内部服务可后续引入 gRPC。
 - 鉴权：`Authorization: Bearer <token>`；服务间可加 `X-KV-Signature`。
-- 幂等：写操作支持 `Idempotency-Key`。
+- 幂等：写操作支持 `Idempotency-Key`。服务端以 `(authenticated_principal_id, tenant_id, HTTP method, canonical path, idempotency_key)` 建立唯一约束，并保存规范化请求体哈希、最终 HTTP 状态和完整响应摘要。相同键但请求体哈希不同必须返回 `409 IDEMPOTENCY_KEY_REUSED`；不得跨主体、跨租户或跨路由复用。记录至少保留到客户端最大重试窗口之后（推荐 24 小时），清理任务必须可审计。
 - 请求追踪：`X-Request-Id`。
+- P0 的同步 Encrypt/Decrypt 仅接受小对象：服务端在读取和 base64 解码前执行请求体上限检查，默认明文/密文上限 64 KiB（策略可下调，增大需安全评审）；超限对象必须使用客户端 DataKey 流式加密，不能通过批量或压缩绕过限制。
+- JSON 解析必须拒绝重复字段、未知安全字段、无效 UTF-8、数值溢出和尾随数据；请求只接受 `application/json`。不得使用会静默覆盖重复字段的默认解析行为来处理认证、租户、AAD 或算法字段。
 - 响应错误：
 
 ```json
@@ -1566,9 +1574,12 @@ DataKey 响应：
   "plaintext_data_key": "base64...",
   "wrapped_data_key": "base64...",
   "suite_id": "AES_256_GCM",
-  "expires_at": "2026-06-17T00:05:00Z"
+  "client_zeroize_by": "2026-06-17T00:05:00Z",
+  "encryption_context_hash": "base64url-sha256..."
 }
 ```
+
+`tenant_id` 由认证上下文确定，创建、加密、解密和 DataKey 请求体中携带时只能用于与认证主体做一致性校验，不能作为服务端选租户的依据。DataKey 的解封请求必须提交完整 `wrapped_data_key` 和完全相同的 encryption context；服务端先验证其认证标签和绑定关系，再返回明文。 
 
 批量加解密 API（P1）：
 
@@ -1967,6 +1978,7 @@ P0 可先提供 Go SDK，封装：
 | `NONCE_EXHAUSTED` | 429 | true | nonce 租约耗尽或续租失败。 |
 | `TPM_UNAVAILABLE` | 503 | true | TPM/vTPM 不可用。 |
 | `DB_CONFLICT` | 409 | true | 并发状态冲突。 |
+| `IDEMPOTENCY_KEY_REUSED` | 409 | false | 幂等键已用于同一路由但请求语义不同。 |
 | `AUDIT_UNAVAILABLE` | 503 | true | 高风险审计不可用。 |
 | `RATE_LIMITED` | 429 | true | DataKey 或加密接口 quota 超限。 |
 
@@ -2064,7 +2076,7 @@ CI 门禁要求：
 
 前向兼容性测试套件：
 
-- 模拟未来字段扩展：在 Envelope 中新增未知字段（如 `aad_v2`、`flags_v2`），验证旧版 SDK/服务端能正确忽略未知字段并完成解密。
+- 模拟未来字段扩展：在 v1 Envelope 中设置未知 flag、预留字段或长度不一致的扩展，验证旧版 SDK/服务端一律安全拒绝而不崩溃；新增安全语义必须通过新的 Envelope `version` 发布，不能依赖旧版静默忽略。
 - 模拟新 Suite ID：新增未识别的 `suite_id`，验证旧版实现按策略拒绝或降级，不崩溃。
 - 模拟版本协商：Envelope `version=2`（未来版本）的向量，验证旧版实现按 INV-08 策略可回溯解密 `version=1` 密文。
 - 前向兼容性测试向量与 Golden Test Vectors 同等管理，作为 CI 门禁。
@@ -2235,7 +2247,7 @@ NIST 已于 2024 年 8 月正式标准化 ML-KEM（CRYSTALS-Kyber）、ML-DSA（
 - Envelope v1 在 P0 预留 PQC 扩展插槽（`flags` bit + `suite_id` 空间，见 8.3），不改变二进制布局。
 - P3 引入 ML-KEM 替换 RSA-OAEP 用于密钥传输/封装场景（如跨区域 wrapped key 传输、外部 KMS 互联），复合套件 `ML_KEM_768_AES_256_GCM` 等通过 `suite_registry` 注册。
 - P3 评估 ML-DSA 替换策略签名包和 JWT 签名（与 SM2/ES256 并存），SLH-DSA 作为无状态签名备选。
-- PQC 算法接入必须通过 KAT、性能基准和前向兼容性测试（旧版 SDK 能忽略 PQC flag 并回退传统套件解密）。
+- PQC 算法接入必须通过 KAT、性能基准和兼容性测试；不识别 PQC flag 或 suite 的旧版 SDK 必须明确拒绝，不能忽略 flag 或回退到传统套件解密。
 - PQC 路线写入 ADR-003（Envelope v1 格式）的演进附录，明确切换窗口和混合模式（传统 + PQC）过渡期策略。
 
 ### 20.9 关键技术攻关项
@@ -2835,7 +2847,7 @@ flowchart LR
 | 编号 | 对应攻击 | 加固方案 | 阶段 | 验收方式 | 架构落点 |
 | --- | --- | --- | --- | --- | --- |
 | HA-01 | BA-01 | service token 默认短 TTL；JWT 必须校验 `iss/aud/exp/nbf/kid/alg`；高权限 scope 拆分独立签发。 | P0 | 过期、错 aud、alg none、跨租户测试全部拒绝。 | 第 5 章 |
-| HA-02 | BA-02 | HMAC 签名覆盖 method、path、body hash、timestamp、nonce、node_id 六项；nonce 窗口内唯一；先校验时间窗再校验 nonce。 | P0 | 重放、改 body、改 path、时钟漂移测试通过。 | 第 5 章 |
+| HA-02 | BA-02 | HMAC 签名覆盖 method、path、body hash、timestamp、nonce、node_id 六项；nonce 在调用方命名空间内唯一；先校验时间窗和签名，再原子登记 nonce。 | P0 | 重放、改 body、改 path、时钟漂移和 nonce 抢占测试通过。 | 第 5 章 |
 | HA-03 | BA-03 | DEK lease cache TTL/LRU/容量/撤销；panic dump 禁出敏感字节；core dump 禁用；pprof 默认关闭。 | P0 | 节点撤销后 cache 清空；敏感扫描通过；core dump 文件无密钥。 | 第 24、26 章 |
 | HA-04 | BA-04 | nonce 速率基线；FROZEN 状态；70% 预取/90% 降载/耗尽 fail-closed；异常节点冻结需手动解冻；singleflight。 | P0 骨架 + P1 完整 | nonce 压测和故障注入无复用；FROZEN 节点无法新加密。 | 第 8 章 |
 | HA-05 | BA-05 | Crypto Policy 签名字段骨架；CBC/ECB 默认 decrypt_only；降级需 approval_id；策略变更写审计。 | P0 骨架 + P1 验签 | 未签名策略 P0 接受但告警，P1 拒绝；CBC/ECB 新加密拒绝。 | 第 10 章 |
