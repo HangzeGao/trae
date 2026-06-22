@@ -57,7 +57,7 @@ func New(deps Deps) *Server {
 	}
 
 	// Build the middleware chain. Order (outer -> inner):
-	//   RequestID -> BodyLimit -> ReadBody -> Auth -> mux
+	//   CORS -> RequestID -> BodyLimit -> ReadBody -> Auth -> mux
 	// ReadBody MUST run before Auth so the body is in context for HMAC verification.
 	var handler http.Handler = mux
 	authMiddleware := middleware.Auth(authCfg)
@@ -75,6 +75,7 @@ func New(deps Deps) *Server {
 	handler = middleware.ReadBody(handler)
 	handler = middleware.BodyLimit(deps.Cfg.Server.MaxRequestBody)(handler)
 	handler = middleware.RequestID(handler)
+	handler = cors(handler)
 
 	srv := &http.Server{
 		Addr:         deps.Cfg.Server.HTTPListenAddr,
@@ -103,3 +104,17 @@ func (s *Server) HTTPServer() *http.Server { return s.http }
 
 // unused import guard
 var _ = time.Second
+
+// cors adds permissive CORS headers for development.
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

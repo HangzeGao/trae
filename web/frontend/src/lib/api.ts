@@ -1,7 +1,12 @@
 import { useAuth } from "./store";
 import type { ApiError } from "./types";
 
-const API_BASE = "";
+// In dev mode with Vite proxy, API_BASE is "" (same-origin, proxy forwards /v1 -> :8080).
+// In Trae sandbox preview or production, we detect if the proxy is unavailable
+// and fall back to direct backend access on port 8080.
+const API_BASE = (import.meta as any).env?.DEV
+  ? (window.location.port === "5173" ? "" : `http://${window.location.hostname}:8080`)
+  : "";
 
 export class HttpError extends Error {
   code: string;
@@ -60,6 +65,6 @@ export const api = {
 
 // Health check (unauthenticated).
 export async function healthCheck(): Promise<{ status: string }> {
-  const resp = await fetch("/healthz");
+  const resp = await fetch(`${API_BASE}/healthz`);
   return resp.json();
 }
