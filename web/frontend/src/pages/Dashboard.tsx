@@ -11,7 +11,7 @@ export function DashboardPage() {
 
   const { data: keysData, isLoading: keysLoading } = useQuery({
     queryKey: ["keys", tenantId],
-    queryFn: () => api.get<{ keys: KeyDTO[] }>("/v1/keys"),
+    queryFn: () => api.get<{ keys: KeyDTO[] }>("/ui/api/v1/keys"),
   });
 
   const { data: health } = useQuery({

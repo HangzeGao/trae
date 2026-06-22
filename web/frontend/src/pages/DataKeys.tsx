@@ -18,13 +18,13 @@ export function DataKeysPage() {
 
   const { data: keysData } = useQuery({
     queryKey: ["keys", tenantId],
-    queryFn: () => api.get<{ keys: KeyDTO[] }>("/v1/keys"),
+    queryFn: () => api.get<{ keys: KeyDTO[] }>("/ui/api/v1/keys"),
   });
   const keys = (keysData?.keys ?? []).filter((k) => k.status === "ACTIVE");
 
   const genMut = useMutation({
     mutationFn: () =>
-      api.post<DataKeyResponse>("/v1/data-keys", {
+      api.post<DataKeyResponse>("/ui/api/v1/data-keys", {
         tenant_id: tenantId,
         key_id: keyId,
         purpose,

@@ -2,7 +2,7 @@ import { useAuth } from "./store";
 import type { ApiError } from "./types";
 
 // API_BASE is empty: all API requests go through the Vite dev server proxy
-// (which forwards /v1/* and /healthz to the Go backend on :8080).
+// (which forwards /ui/api/v1/* and /healthz to the Go backend on :8080).
 // In production (Go embeds the frontend), requests are same-origin.
 const API_BASE = "";
 

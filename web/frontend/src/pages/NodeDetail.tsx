@@ -12,17 +12,17 @@ export function NodeDetailPage() {
 
   const { data: node, isLoading, error } = useQuery({
     queryKey: ["node", id],
-    queryFn: () => api.get<NodeDTO>(`/v1/nodes/${id}`),
+    queryFn: () => api.get<NodeDTO>(`/ui/api/v1/nodes/${id}`),
     enabled: !!id,
   });
 
   const markReadyMut = useMutation({
-    mutationFn: () => api.post<NodeDTO>(`/v1/nodes/${id}/mark-ready`),
+    mutationFn: () => api.post<NodeDTO>(`/ui/api/v1/nodes/${id}/mark-ready`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["node", id] }); showToast("node marked ready", "success"); },
     onError: (e: Error) => showToast(e.message, "error"),
   });
   const revokeMut = useMutation({
-    mutationFn: () => api.post(`/v1/nodes/${id}/revoke`),
+    mutationFn: () => api.post(`/ui/api/v1/nodes/${id}/revoke`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["node", id] }); showToast("node revoked", "warning"); },
     onError: (e: Error) => showToast(e.message, "error"),
   });

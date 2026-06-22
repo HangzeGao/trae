@@ -26,17 +26,17 @@ func New(keys *keys.Service, nodes *nodes.Service) *Handler {
 
 // Routes registers the management routes.
 func (h *Handler) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/keys", h.createKey)
-	mux.HandleFunc("GET /v1/keys", h.listKeys)
-	mux.HandleFunc("GET /v1/keys/{key_id}", h.getKey)
-	mux.HandleFunc("POST /v1/keys/{key_id}/enable", h.enableKey)
-	mux.HandleFunc("POST /v1/keys/{key_id}/disable", h.disableKey)
-	mux.HandleFunc("POST /v1/keys/{key_id}/rotate", h.rotateKey)
-	mux.HandleFunc("POST /v1/keys/{key_id}/schedule-destroy", h.scheduleDestroy)
-	mux.HandleFunc("POST /v1/nodes/register", h.registerNode)
-	mux.HandleFunc("POST /v1/nodes/{node_id}/mark-ready", h.markReady)
-	mux.HandleFunc("POST /v1/nodes/{node_id}/revoke", h.revokeNode)
-	mux.HandleFunc("GET /v1/nodes/{node_id}", h.getNode)
+	mux.HandleFunc("POST /ui/api/v1/keys", h.createKey)
+	mux.HandleFunc("GET /ui/api/v1/keys", h.listKeys)
+	mux.HandleFunc("GET /ui/api/v1/keys/{key_id}", h.getKey)
+	mux.HandleFunc("POST /ui/api/v1/keys/{key_id}/enable", h.enableKey)
+	mux.HandleFunc("POST /ui/api/v1/keys/{key_id}/disable", h.disableKey)
+	mux.HandleFunc("POST /ui/api/v1/keys/{key_id}/rotate", h.rotateKey)
+	mux.HandleFunc("POST /ui/api/v1/keys/{key_id}/schedule-destroy", h.scheduleDestroy)
+	mux.HandleFunc("POST /ui/api/v1/nodes/register", h.registerNode)
+	mux.HandleFunc("POST /ui/api/v1/nodes/{node_id}/mark-ready", h.markReady)
+	mux.HandleFunc("POST /ui/api/v1/nodes/{node_id}/revoke", h.revokeNode)
+	mux.HandleFunc("GET /ui/api/v1/nodes/{node_id}", h.getNode)
 }
 
 type createKeyReq struct {

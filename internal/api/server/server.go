@@ -61,10 +61,11 @@ func New(deps Deps) *Server {
 	// ReadBody MUST run before Auth so the body is in context for HMAC verification.
 	var handler http.Handler = mux
 	authMiddleware := middleware.Auth(authCfg)
-	// Wrap auth so healthz and /ui/ bypass authentication.
+	// Wrap auth so healthz and /ui/ static assets bypass authentication.
+	// /ui/api/ paths must still go through auth.
 	authWrapper := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/ui/") {
+			if r.URL.Path == "/healthz" || (strings.HasPrefix(r.URL.Path, "/ui/") && !strings.HasPrefix(r.URL.Path, "/ui/api/")) {
 				h.ServeHTTP(w, r)
 				return
 			}

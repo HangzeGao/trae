@@ -194,7 +194,7 @@ func TestE2E_AuthRequired(t *testing.T) {
 	env := newTestEnv(t)
 	defer env.close()
 
-	resp, _ := http.Post(env.server.URL+"/v1/keys", "application/json", strings.NewReader(`{}`))
+	resp, _ := http.Post(env.server.URL+"/ui/api/v1/keys", "application/json", strings.NewReader(`{}`))
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
@@ -217,7 +217,7 @@ func TestE2E_CreateKeyAndEncrypt(t *testing.T) {
 		"policy_id": "default-v1",
 		"suite_id":  "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: status=%d body=%s", resp.StatusCode, body)
 	}
@@ -240,7 +240,7 @@ func TestE2E_CreateKeyAndEncrypt(t *testing.T) {
 		"node_id":    "node-data-1",
 		"aad":        map[string]string{"purpose": "e2e-test", "resource_id": "res-1"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt: status=%d body=%s", resp.StatusCode, body)
 	}
@@ -266,7 +266,7 @@ func TestE2E_CreateKeyAndEncrypt(t *testing.T) {
 		"ciphertext": encResp.Ciphertext,
 		"aad":        map[string]string{"purpose": "e2e-test", "resource_id": "res-1"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/decrypt", decBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("decrypt: status=%d body=%s", resp.StatusCode, body)
 	}
@@ -295,7 +295,7 @@ func TestE2E_AADMismatchFailsDecryption(t *testing.T) {
 		"tenant_id": "t-default", "name": "aad-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -309,7 +309,7 @@ func TestE2E_AADMismatchFailsDecryption(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "alpha", "resource_id": "r1"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt: %d %s", resp.StatusCode, body)
 	}
@@ -322,7 +322,7 @@ func TestE2E_AADMismatchFailsDecryption(t *testing.T) {
 		"ciphertext": encResp.Ciphertext,
 		"aad":        map[string]string{"purpose": "beta", "resource_id": "r1"},
 	}
-	resp, _ = env.doData("POST", "/v1/crypto/decrypt", decBody)
+	resp, _ = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400 for AAD mismatch, got %d", resp.StatusCode)
 	}
@@ -340,7 +340,7 @@ func TestE2E_KeyStateTransitions(t *testing.T) {
 		"tenant_id": "t-default", "name": "state-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -354,7 +354,7 @@ func TestE2E_KeyStateTransitions(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt while ACTIVE: %d %s", resp.StatusCode, body)
 	}
@@ -362,7 +362,7 @@ func TestE2E_KeyStateTransitions(t *testing.T) {
 	json.Unmarshal(body, &encResp)
 
 	// Verify ACTIVE.
-	resp, body = env.doAdmin("GET", "/v1/keys/"+keyResp.KeyID, nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/keys/"+keyResp.KeyID, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("get key: %d %s", resp.StatusCode, body)
 	}
@@ -373,46 +373,46 @@ func TestE2E_KeyStateTransitions(t *testing.T) {
 	}
 
 	// Disable.
-	resp, _ = env.doAdmin("POST", "/v1/keys/"+keyResp.KeyID+"/disable", nil)
+	resp, _ = env.doAdmin("POST", "/ui/api/v1/keys/"+keyResp.KeyID+"/disable", nil)
 	if resp.StatusCode != 204 {
 		t.Fatalf("disable: %d", resp.StatusCode)
 	}
-	resp, body = env.doAdmin("GET", "/v1/keys/"+keyResp.KeyID, nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/keys/"+keyResp.KeyID, nil)
 	json.Unmarshal(body, &k)
 	if k.Status != "DISABLED" {
 		t.Fatalf("status = %s, want DISABLED", k.Status)
 	}
 
 	// Disabled key cannot encrypt.
-	resp, _ = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, _ = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 409 {
 		t.Fatalf("encrypt disabled key: expected 409, got %d", resp.StatusCode)
 	}
 
 	// Enable.
-	resp, _ = env.doAdmin("POST", "/v1/keys/"+keyResp.KeyID+"/enable", nil)
+	resp, _ = env.doAdmin("POST", "/ui/api/v1/keys/"+keyResp.KeyID+"/enable", nil)
 	if resp.StatusCode != 204 {
 		t.Fatalf("enable: %d", resp.StatusCode)
 	}
-	resp, body = env.doAdmin("GET", "/v1/keys/"+keyResp.KeyID, nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/keys/"+keyResp.KeyID, nil)
 	json.Unmarshal(body, &k)
 	if k.Status != "ACTIVE" {
 		t.Fatalf("status = %s, want ACTIVE", k.Status)
 	}
 
 	// Schedule destroy.
-	resp, _ = env.doAdmin("POST", "/v1/keys/"+keyResp.KeyID+"/schedule-destroy", nil)
+	resp, _ = env.doAdmin("POST", "/ui/api/v1/keys/"+keyResp.KeyID+"/schedule-destroy", nil)
 	if resp.StatusCode != 204 {
 		t.Fatalf("schedule-destroy: %d", resp.StatusCode)
 	}
-	resp, body = env.doAdmin("GET", "/v1/keys/"+keyResp.KeyID, nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/keys/"+keyResp.KeyID, nil)
 	json.Unmarshal(body, &k)
 	if k.Status != "DESTROY_PENDING" {
 		t.Fatalf("status = %s, want DESTROY_PENDING", k.Status)
 	}
 
 	// DESTROY_PENDING cannot encrypt (only ACTIVE can).
-	resp, _ = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, _ = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 409 {
 		t.Fatalf("encrypt DESTROY_PENDING: expected 409, got %d", resp.StatusCode)
 	}
@@ -423,7 +423,7 @@ func TestE2E_KeyStateTransitions(t *testing.T) {
 		"ciphertext": encResp.Ciphertext,
 		"aad":        map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/decrypt", decBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("decrypt DESTROY_PENDING: expected 200, got %d", resp.StatusCode)
 	}
@@ -446,7 +446,7 @@ func TestE2E_KeyRotation(t *testing.T) {
 		"tenant_id": "t-default", "name": "rotate-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -466,7 +466,7 @@ func TestE2E_KeyRotation(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt v1: %d %s", resp.StatusCode, body)
 	}
@@ -481,7 +481,7 @@ func TestE2E_KeyRotation(t *testing.T) {
 	v1Ciphertext := encResp.Ciphertext
 
 	// Rotate.
-	resp, body = env.doAdmin("POST", "/v1/keys/"+keyResp.KeyID+"/rotate", nil)
+	resp, body = env.doAdmin("POST", "/ui/api/v1/keys/"+keyResp.KeyID+"/rotate", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("rotate: %d %s", resp.StatusCode, body)
 	}
@@ -492,7 +492,7 @@ func TestE2E_KeyRotation(t *testing.T) {
 	}
 
 	// New encryption uses v2.
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt v2: %d %s", resp.StatusCode, body)
 	}
@@ -507,7 +507,7 @@ func TestE2E_KeyRotation(t *testing.T) {
 		"ciphertext": v1Ciphertext,
 		"aad":        map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/decrypt", decBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("decrypt v1 after rotation: %d %s", resp.StatusCode, body)
 	}
@@ -529,7 +529,7 @@ func TestE2E_GenerateDataKey(t *testing.T) {
 		"tenant_id": "t-default", "name": "dk-test", "purpose": "datakey",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -548,7 +548,7 @@ func TestE2E_GenerateDataKey(t *testing.T) {
 			"env":  "test",
 		},
 	}
-	resp, body = env.doData("POST", "/v1/data-keys", dkBody)
+	resp, body = env.doData("POST", "/ui/api/v1/data-keys", dkBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("generate datakey: %d %s", resp.StatusCode, body)
 	}
@@ -595,7 +595,7 @@ func TestE2E_DataKeyTTLMaxEnforced(t *testing.T) {
 		"tenant_id": "t-default", "name": "ttl-test", "purpose": "datakey",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -610,7 +610,7 @@ func TestE2E_DataKeyTTLMaxEnforced(t *testing.T) {
 		"ttl_seconds": 16 * 60, // 16 minutes
 		"caller":      "direct",
 	}
-	resp, _ = env.doData("POST", "/v1/data-keys", dkBody)
+	resp, _ = env.doData("POST", "/ui/api/v1/data-keys", dkBody)
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400 for TTL > 15min, got %d", resp.StatusCode)
 	}
@@ -632,7 +632,7 @@ func TestE2E_CrossTenantIsolation(t *testing.T) {
 		"tenant_id": "t-default", "name": "iso-key-a", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key A: %d %s", resp.StatusCode, body)
 	}
@@ -657,7 +657,7 @@ func TestE2E_CrossTenantIsolation(t *testing.T) {
 		"node_id":   "node-b-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	req, _ := http.NewRequest("POST", env.server.URL+"/v1/crypto/encrypt", strings.NewReader(mustJSON(encBody)))
+	req, _ := http.NewRequest("POST", env.server.URL+"/ui/api/v1/crypto/encrypt", strings.NewReader(mustJSON(encBody)))
 	req.Header.Set("Authorization", "Bearer tenant-b-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ = http.DefaultClient.Do(req)
@@ -678,7 +678,7 @@ func TestE2E_NonceLeaseCountersNeverRepeat(t *testing.T) {
 		"tenant_id": "t-default", "name": "nonce-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -694,7 +694,7 @@ func TestE2E_NonceLeaseCountersNeverRepeat(t *testing.T) {
 			"node_id":   "node-data-1",
 			"aad":       map[string]string{"purpose": "p"},
 		}
-		resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+		resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 		if resp.StatusCode != 200 {
 			t.Fatalf("encrypt[%d]: %d %s", i, resp.StatusCode, body)
 		}
@@ -733,7 +733,7 @@ func TestE2E_NodeRegistration(t *testing.T) {
 			"swtpm_isolated":  true,
 		},
 	}
-	resp, body := env.doAdmin("POST", "/v1/nodes/register", regBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/nodes/register", regBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("register node: %d %s", resp.StatusCode, body)
 	}
@@ -747,7 +747,7 @@ func TestE2E_NodeRegistration(t *testing.T) {
 	}
 
 	// Mark ready.
-	resp, body = env.doAdmin("POST", "/v1/nodes/node-e2e-1/mark-ready", nil)
+	resp, body = env.doAdmin("POST", "/ui/api/v1/nodes/node-e2e-1/mark-ready", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("mark-ready: %d %s", resp.StatusCode, body)
 	}
@@ -757,17 +757,17 @@ func TestE2E_NodeRegistration(t *testing.T) {
 	}
 
 	// Get node.
-	resp, body = env.doAdmin("GET", "/v1/nodes/node-e2e-1", nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/nodes/node-e2e-1", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("get node: %d %s", resp.StatusCode, body)
 	}
 
 	// Revoke.
-	resp, _ = env.doAdmin("POST", "/v1/nodes/node-e2e-1/revoke", nil)
+	resp, _ = env.doAdmin("POST", "/ui/api/v1/nodes/node-e2e-1/revoke", nil)
 	if resp.StatusCode != 204 {
 		t.Fatalf("revoke: %d", resp.StatusCode)
 	}
-	resp, body = env.doAdmin("GET", "/v1/nodes/node-e2e-1", nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/nodes/node-e2e-1", nil)
 	json.Unmarshal(body, &nodeResp)
 	if nodeResp.Status != "REVOKED" {
 		t.Fatalf("status = %s, want REVOKED", nodeResp.Status)
@@ -785,7 +785,7 @@ func TestE2E_PolicyRejectsBadSuite(t *testing.T) {
 		"tenant_id": "t-default", "name": "bad-suite", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_CBC_HMAC_SHA256",
 	}
-	resp, _ := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, _ := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400 for CBC suite, got %d", resp.StatusCode)
 	}
@@ -801,7 +801,7 @@ func TestE2E_BodyLimitEnforced(t *testing.T) {
 		"tenant_id": "t-default", "name": "body-limit", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -819,7 +819,7 @@ func TestE2E_BodyLimitEnforced(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	resp, _ = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, _ = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 400 && resp.StatusCode != 413 {
 		t.Fatalf("expected 400 or 413 for oversized body, got %d", resp.StatusCode)
 	}
@@ -835,7 +835,7 @@ func TestE2E_HMACAuth(t *testing.T) {
 		"tenant_id": "t-default", "name": "hmac-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -854,7 +854,7 @@ func TestE2E_HMACAuth(t *testing.T) {
 		"aad":       map[string]string{"purpose": "p"},
 	}
 	bodyBytes, _ := json.Marshal(encBody)
-	req, _ := http.NewRequest("POST", env.server.URL+"/v1/crypto/encrypt", strings.NewReader(string(bodyBytes)))
+	req, _ := http.NewRequest("POST", env.server.URL+"/ui/api/v1/crypto/encrypt", strings.NewReader(string(bodyBytes)))
 	req.Header.Set("Content-Type", "application/json")
 	if err := hmacsign.SignRequest(req, bodyBytes, "key-hmac-1", secret, "node-hmac-1"); err != nil {
 		t.Fatalf("sign: %v", err)
@@ -878,7 +878,7 @@ func TestE2E_SM4Suite(t *testing.T) {
 		"tenant_id": "t-default", "name": "sm4-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "SM4_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create SM4 key: %d %s", resp.StatusCode, body)
 	}
@@ -891,7 +891,7 @@ func TestE2E_SM4Suite(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("sm4 encrypt: %d %s", resp.StatusCode, body)
 	}
@@ -909,7 +909,7 @@ func TestE2E_SM4Suite(t *testing.T) {
 		"ciphertext": encResp.Ciphertext,
 		"aad":        map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/decrypt", decBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("sm4 decrypt: %d %s", resp.StatusCode, body)
 	}
@@ -930,7 +930,7 @@ func TestE2E_EnvelopeFormat(t *testing.T) {
 		"tenant_id": "t-default", "name": "env-fmt", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -943,7 +943,7 @@ func TestE2E_EnvelopeFormat(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p", "resource_id": "r1"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt: %d %s", resp.StatusCode, body)
 	}
@@ -1144,7 +1144,7 @@ func TestE2E_IdempotentEncrypt(t *testing.T) {
 		"tenant_id": "t-default", "name": "idem-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -1157,14 +1157,14 @@ func TestE2E_IdempotentEncrypt(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt 1: %d %s", resp.StatusCode, body)
 	}
 	var enc1 struct{ Ciphertext string `json:"ciphertext"` }
 	json.Unmarshal(body, &enc1)
 
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt 2: %d %s", resp.StatusCode, body)
 	}
@@ -1182,7 +1182,7 @@ func TestE2E_IdempotentEncrypt(t *testing.T) {
 			"ciphertext": ct,
 			"aad":        map[string]string{"purpose": "p"},
 		}
-		resp, body = env.doData("POST", "/v1/crypto/decrypt", decBody)
+		resp, body = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 		if resp.StatusCode != 200 {
 			t.Fatalf("decrypt: %d %s", resp.StatusCode, body)
 		}
@@ -1227,13 +1227,13 @@ func TestE2E_ListKeys(t *testing.T) {
 			"tenant_id": "t-default", "name": fmt.Sprintf("list-key-%d", i),
 			"purpose": "encrypt_decrypt", "policy_id": "default-v1", "suite_id": "AES_256_GCM",
 		}
-		resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+		resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 		if resp.StatusCode != 201 {
 			t.Fatalf("create key %d: %d %s", i, resp.StatusCode, body)
 		}
 	}
 
-	resp, body := env.doAdmin("GET", "/v1/keys", nil)
+	resp, body := env.doAdmin("GET", "/ui/api/v1/keys", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("list keys: %d %s", resp.StatusCode, body)
 	}
@@ -1258,7 +1258,7 @@ func TestE2E_TamperedCiphertextRejected(t *testing.T) {
 		"tenant_id": "t-default", "name": "tamper-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -1271,7 +1271,7 @@ func TestE2E_TamperedCiphertextRejected(t *testing.T) {
 		"node_id":   "node-data-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	resp, body = env.doData("POST", "/v1/crypto/encrypt", encBody)
+	resp, body = env.doData("POST", "/ui/api/v1/crypto/encrypt", encBody)
 	if resp.StatusCode != 200 {
 		t.Fatalf("encrypt: %d %s", resp.StatusCode, body)
 	}
@@ -1302,7 +1302,7 @@ func TestE2E_TamperedCiphertextRejected(t *testing.T) {
 		"ciphertext": base64.StdEncoding.EncodeToString(tampered),
 		"aad":        map[string]string{"purpose": "p"},
 	}
-	resp, _ = env.doData("POST", "/v1/crypto/decrypt", decBody)
+	resp, _ = env.doData("POST", "/ui/api/v1/crypto/decrypt", decBody)
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400 for tampered ciphertext, got %d", resp.StatusCode)
 	}
@@ -1319,7 +1319,7 @@ func TestE2E_PlaneIsolation(t *testing.T) {
 		"tenant_id": "t-default", "name": "plane-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, _ := env.doData("POST", "/v1/keys", createBody)
+	resp, _ := env.doData("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 403 {
 		t.Fatalf("expected 403 for data-plane calling management API, got %d", resp.StatusCode)
 	}
@@ -1347,7 +1347,7 @@ func TestE2E_MissingScope(t *testing.T) {
 		"tenant_id": "t-default", "name": "scope-test", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBody)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBody)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key: %d %s", resp.StatusCode, body)
 	}
@@ -1361,7 +1361,7 @@ func TestE2E_MissingScope(t *testing.T) {
 		"node_id":   "node-enc-1",
 		"aad":       map[string]string{"purpose": "p"},
 	}
-	req, _ := http.NewRequest("POST", env.server.URL+"/v1/crypto/encrypt", strings.NewReader(mustJSON(encBody)))
+	req, _ := http.NewRequest("POST", env.server.URL+"/ui/api/v1/crypto/encrypt", strings.NewReader(mustJSON(encBody)))
 	req.Header.Set("Authorization", "Bearer enc-only-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, body = doReq(req)
@@ -1377,7 +1377,7 @@ func TestE2E_MissingScope(t *testing.T) {
 		"ciphertext": encResp.Ciphertext,
 		"aad":        map[string]string{"purpose": "p"},
 	}
-	req, _ = http.NewRequest("POST", env.server.URL+"/v1/crypto/decrypt", strings.NewReader(mustJSON(decBody)))
+	req, _ = http.NewRequest("POST", env.server.URL+"/ui/api/v1/crypto/decrypt", strings.NewReader(mustJSON(decBody)))
 	req.Header.Set("Authorization", "Bearer enc-only-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ = doReq(req)
@@ -1533,7 +1533,7 @@ func TestE2E_MultipleTenants(t *testing.T) {
 		"tenant_id": "t-default", "name": "key-a", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	resp, body := env.doAdmin("POST", "/v1/keys", createBodyA)
+	resp, body := env.doAdmin("POST", "/ui/api/v1/keys", createBodyA)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create key A: %d %s", resp.StatusCode, body)
 	}
@@ -1543,7 +1543,7 @@ func TestE2E_MultipleTenants(t *testing.T) {
 		"tenant_id": "t-tenant-b", "name": "key-b", "purpose": "encrypt_decrypt",
 		"policy_id": "default-v1", "suite_id": "AES_256_GCM",
 	}
-	req, _ := http.NewRequest("POST", env.server.URL+"/v1/keys", strings.NewReader(mustJSON(createBodyB)))
+	req, _ := http.NewRequest("POST", env.server.URL+"/ui/api/v1/keys", strings.NewReader(mustJSON(createBodyB)))
 	req.Header.Set("Authorization", "Bearer admin-b-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, body = doReq(req)
@@ -1552,7 +1552,7 @@ func TestE2E_MultipleTenants(t *testing.T) {
 	}
 
 	// List keys for tenant A should not include tenant B's key.
-	resp, body = env.doAdmin("GET", "/v1/keys", nil)
+	resp, body = env.doAdmin("GET", "/ui/api/v1/keys", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("list keys A: %d", resp.StatusCode)
 	}

@@ -15,11 +15,11 @@ export function KeysPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["keys", tenantId],
-    queryFn: () => api.get<{ keys: KeyDTO[] }>("/v1/keys"),
+    queryFn: () => api.get<{ keys: KeyDTO[] }>("/ui/api/v1/keys"),
   });
 
   const createMut = useMutation({
-    mutationFn: (req: CreateKeyReq) => api.post<KeyDTO>("/v1/keys", req),
+    mutationFn: (req: CreateKeyReq) => api.post<KeyDTO>("/ui/api/v1/keys", req),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["keys", tenantId] });
       setShowCreate(false);

@@ -14,29 +14,29 @@ export function KeyDetailPage() {
 
   const { data: key, isLoading, error } = useQuery({
     queryKey: ["key", id],
-    queryFn: () => api.get<KeyDTO>(`/v1/keys/${id}`),
+    queryFn: () => api.get<KeyDTO>(`/ui/api/v1/keys/${id}`),
     enabled: !!id,
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["key", id] });
 
   const disableMut = useMutation({
-    mutationFn: () => api.post(`/v1/keys/${id}/disable`),
+    mutationFn: () => api.post(`/ui/api/v1/keys/${id}/disable`),
     onSuccess: () => { invalidate(); showToast("key disabled", "success"); },
     onError: (e: Error) => showToast(e.message, "error"),
   });
   const enableMut = useMutation({
-    mutationFn: () => api.post(`/v1/keys/${id}/enable`),
+    mutationFn: () => api.post(`/ui/api/v1/keys/${id}/enable`),
     onSuccess: () => { invalidate(); showToast("key enabled", "success"); },
     onError: (e: Error) => showToast(e.message, "error"),
   });
   const rotateMut = useMutation({
-    mutationFn: () => api.post(`/v1/keys/${id}/rotate`),
+    mutationFn: () => api.post(`/ui/api/v1/keys/${id}/rotate`),
     onSuccess: () => { invalidate(); showToast("key rotated", "success"); },
     onError: (e: Error) => showToast(e.message, "error"),
   });
   const destroyMut = useMutation({
-    mutationFn: () => api.post(`/v1/keys/${id}/schedule-destroy`),
+    mutationFn: () => api.post(`/ui/api/v1/keys/${id}/schedule-destroy`),
     onSuccess: () => { invalidate(); setConfirmDestroy(false); showToast("destroy scheduled", "warning"); },
     onError: (e: Error) => showToast(e.message, "error"),
   });

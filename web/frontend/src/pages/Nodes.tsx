@@ -25,7 +25,7 @@ export function NodesPage() {
     queryKey: ["nodes", knownNodes],
     queryFn: async () => {
       const results = await Promise.allSettled(
-        knownNodes.map((id) => api.get<NodeDTO>(`/v1/nodes/${id}`))
+        knownNodes.map((id) => api.get<NodeDTO>(`/ui/api/v1/nodes/${id}`))
       );
       return results
         .filter((r): r is PromiseFulfilledResult<NodeDTO> => r.status === "fulfilled")
@@ -36,7 +36,7 @@ export function NodesPage() {
 
   const nodes = queries.data ?? [];
   const registerMut = useMutation({
-    mutationFn: (req: RegisterNodeReq) => api.post<NodeDTO>("/v1/nodes/register", req),
+    mutationFn: (req: RegisterNodeReq) => api.post<NodeDTO>("/ui/api/v1/nodes/register", req),
     onSuccess: (node) => {
       const updated = [...new Set([...knownNodes, node.node_id])];
       setKnownNodes(updated);

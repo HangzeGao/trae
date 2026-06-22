@@ -25,9 +25,9 @@ func New(svc *crypto.Service) *Handler {
 
 // Routes registers the crypto routes.
 func (h *Handler) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/crypto/encrypt", h.encrypt)
-	mux.HandleFunc("POST /v1/crypto/decrypt", h.decrypt)
-	mux.HandleFunc("POST /v1/data-keys", h.generateDataKey)
+	mux.HandleFunc("POST /ui/api/v1/crypto/encrypt", h.encrypt)
+	mux.HandleFunc("POST /ui/api/v1/crypto/decrypt", h.decrypt)
+	mux.HandleFunc("POST /ui/api/v1/data-keys", h.generateDataKey)
 }
 
 type encryptReq struct {

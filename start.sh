@@ -80,7 +80,7 @@ run_smoke_test() {
         -H "Authorization: Bearer admin-token-p0" \
         -H "Content-Type: application/json" \
         -d '{"tenant_id":"t-default","name":"smoke-test-key","purpose":"encrypt_decrypt","policy_id":"default-v1","suite_id":"AES_256_GCM"}' \
-        http://localhost:8080/v1/keys)
+        http://localhost:8080/ui/api/v1/keys)
     if echo "$key_result" | grep -q '"key_id"'; then
         success "Create key: PASSED"
         local key_id=$(echo "$key_result" | grep -o '"key_id":"[^"]*"' | cut -d'"' -f4)
@@ -92,7 +92,7 @@ run_smoke_test() {
     
     echo ""
     echo "=== TEST 4: List Keys ==="
-    local list_result=$(curl -s -H "Authorization: Bearer admin-token-p0" http://localhost:8080/v1/keys)
+    local list_result=$(curl -s -H "Authorization: Bearer admin-token-p0" http://localhost:8080/ui/api/v1/keys)
     if echo "$list_result" | grep -q '"keys"'; then
         success "List keys: PASSED"
     else
@@ -106,7 +106,7 @@ run_smoke_test() {
         -H "Authorization: Bearer admin-token-p0" \
         -H "Content-Type: application/json" \
         -d '{"node_id":"smoke-test-node","role":"data","baseline":{"selinux_status":"enforcing","kernel_version":"5.15.0","virt_platform":"kvm","tpm2_tss_version":"3.2.0","swtpm_isolated":true}}' \
-        http://localhost:8080/v1/nodes/register)
+        http://localhost:8080/ui/api/v1/nodes/register)
     if echo "$node_result" | grep -q '"node_id"'; then
         success "Register node: PASSED"
     else
@@ -120,7 +120,7 @@ run_smoke_test() {
         -H "Authorization: Bearer admin-token-p0" \
         -H "Content-Type: application/json" \
         -d '{"tenant_id":"t-default","key_id":"'"$key_id"'","plaintext":"aGVsbG8ga2ZsdXQ=","node_id":"smoke-test-node"}' \
-        http://localhost:8080/v1/crypto/encrypt)
+        http://localhost:8080/ui/api/v1/crypto/encrypt)
     if echo "$enc_result" | grep -q '"ciphertext"'; then
         success "Encrypt: PASSED"
         success "Decrypt: SKIPPED (verified in integration tests)"
@@ -135,7 +135,7 @@ run_smoke_test() {
         -H "Authorization: Bearer admin-token-p0" \
         -H "Content-Type: application/json" \
         -d '{"tenant_id":"t-default","key_id":"'"$key_id"'","purpose":"test","ttl_seconds":300}' \
-        http://localhost:8080/v1/data-keys)
+        http://localhost:8080/ui/api/v1/data-keys)
     if echo "$data_key_result" | grep -q '"plaintext_data_key"'; then
         success "Data key generation: PASSED"
     else
@@ -221,7 +221,7 @@ if run_smoke_test "$FRONTEND_PORT"; then
     echo "======================================"
     echo ""
     echo "  Frontend: http://localhost:$FRONTEND_PORT/ui/login"
-    echo "  Backend API: http://localhost:8080/v1/"
+    echo "  Backend API: http://localhost:8080/ui/api/v1/"
     echo "  Admin Token: admin-token-p0"
     echo ""
     echo "  Press Ctrl+C to stop all services"

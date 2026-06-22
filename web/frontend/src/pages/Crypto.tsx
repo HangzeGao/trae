@@ -26,13 +26,13 @@ export function CryptoPage() {
 
   const { data: keysData } = useQuery({
     queryKey: ["keys", tenantId],
-    queryFn: () => api.get<{ keys: KeyDTO[] }>("/v1/keys"),
+    queryFn: () => api.get<{ keys: KeyDTO[] }>("/ui/api/v1/keys"),
   });
   const keys = (keysData?.keys ?? []).filter((k) => k.status === "ACTIVE");
 
   const encMut = useMutation({
     mutationFn: () =>
-      api.post<EncryptResponse>("/v1/crypto/encrypt", {
+      api.post<EncryptResponse>("/ui/api/v1/crypto/encrypt", {
         tenant_id: tenantId,
         key_id: keyId,
         plaintext: toBase64(plaintext),
@@ -45,7 +45,7 @@ export function CryptoPage() {
 
   const decMut = useMutation({
     mutationFn: () =>
-      api.post<DecryptResponse>("/v1/crypto/decrypt", {
+      api.post<DecryptResponse>("/ui/api/v1/crypto/decrypt", {
         tenant_id: tenantId,
         ciphertext: decCiphertext,
         aad: { purpose: decPurpose || undefined, resource_id: decResource || undefined },
