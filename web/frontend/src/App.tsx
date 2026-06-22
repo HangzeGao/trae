@@ -25,16 +25,16 @@ function ProtectedRoutes() {
 
   return (
     <Routes>
-      <Route path="/ui/dashboard" element={<DashboardPage />} />
-      <Route path="/ui/keys" element={<KeysPage />} />
-      <Route path="/ui/keys/:id" element={<KeyDetailPage />} />
-      <Route path="/ui/nodes" element={<NodesPage />} />
-      <Route path="/ui/nodes/:id" element={<NodeDetailPage />} />
-      <Route path="/ui/crypto" element={<CryptoPage />} />
-      <Route path="/ui/data-keys" element={<DataKeysPage />} />
-      <Route path="/ui/policy" element={<PolicyPage />} />
-      <Route path="/ui/audit" element={<AuditPage />} />
-      <Route path="*" element={<Navigate to="/ui/dashboard" replace />} />
+      <Route path="dashboard" element={<DashboardPage />} />
+      <Route path="keys" element={<KeysPage />} />
+      <Route path="keys/:id" element={<KeyDetailPage />} />
+      <Route path="nodes" element={<NodesPage />} />
+      <Route path="nodes/:id" element={<NodeDetailPage />} />
+      <Route path="crypto" element={<CryptoPage />} />
+      <Route path="data-keys" element={<DataKeysPage />} />
+      <Route path="policy" element={<PolicyPage />} />
+      <Route path="audit" element={<AuditPage />} />
+      <Route path="*" element={<Navigate to="dashboard" replace />} />
     </Routes>
   );
 }
