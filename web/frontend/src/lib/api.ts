@@ -1,12 +1,10 @@
 import { useAuth } from "./store";
 import type { ApiError } from "./types";
 
-// In dev mode with Vite proxy, API_BASE is "" (same-origin, proxy forwards /v1 -> :8080).
-// In Trae sandbox preview or production, we detect if the proxy is unavailable
-// and fall back to direct backend access on port 8080.
-const API_BASE = (import.meta as any).env?.DEV
-  ? (window.location.port === "5173" ? "" : `http://${window.location.hostname}:8080`)
-  : "";
+// API_BASE is empty: all API requests go through the Vite dev server proxy
+// (which forwards /v1/* and /healthz to the Go backend on :8080).
+// In production (Go embeds the frontend), requests are same-origin.
+const API_BASE = "";
 
 export class HttpError extends Error {
   code: string;
