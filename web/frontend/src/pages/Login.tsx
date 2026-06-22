@@ -6,7 +6,7 @@ import { useAuth } from "../lib/store";
 export function LoginPage() {
   const { setToken, setTenantId, token } = useAuth();
   const [input, setInput] = useState(token ?? "");
-  const [tenant, setTenant] = useState("t-default");
+  const [tenant, setTenant] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
 

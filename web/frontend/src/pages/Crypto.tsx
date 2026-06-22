@@ -13,6 +13,7 @@ export function CryptoPage() {
   const [plaintext, setPlaintext] = useState("hello, cryogenic vault");
   const [encPurpose, setEncPurpose] = useState("sandbox");
   const [encResource, setEncResource] = useState("");
+  const [encNodeId, setEncNodeId] = useState("");
   const [encResult, setEncResult] = useState<EncryptResponse | null>(null);
 
   const [decCiphertext, setDecCiphertext] = useState("");
@@ -36,6 +37,7 @@ export function CryptoPage() {
         key_id: keyId,
         plaintext: toBase64(plaintext),
         aad: { purpose: encPurpose || undefined, resource_id: encResource || undefined },
+        node_id: encNodeId || undefined,
       }),
     onSuccess: (r) => { setEncResult(r); showToast("encrypted", "success"); },
     onError: (e: Error) => showToast(e.message, "error"),
@@ -95,7 +97,11 @@ export function CryptoPage() {
                 <input className="input" value={encResource} onChange={(e) => setEncResource(e.target.value)} />
               </div>
             </div>
-            <button className="btn btn-primary" disabled={!keyId || encMut.isPending} onClick={() => encMut.mutate()}>
+            <div>
+              <label className="input-label">Node ID</label>
+              <input className="input" value={encNodeId} onChange={(e) => setEncNodeId(e.target.value)} placeholder="required — e.g. node-1" />
+            </div>
+            <button className="btn btn-primary" disabled={!keyId || !encNodeId.trim() || encMut.isPending} onClick={() => encMut.mutate()}>
               <Lock size={14} /> {encMut.isPending ? "Encrypting..." : "Encrypt"}
             </button>
             {encResult && (
